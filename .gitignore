@@ -1,0 +1,15 @@
+# Local convenience symlink to the canonical asupersync checkout.
+# The canonical ATP source lives in https://github.com/Dicklesworthstone/asupersync
+# (pinned for releases via UPSTREAM_REV). Never commit the symlink target.
+/upstream
+
+# Local build output
+/dist/
+/target/
+*.tar.gz
+*.sha256
+SHA256SUMS
+
+# Editor / OS noise
+.DS_Store
+*.swp

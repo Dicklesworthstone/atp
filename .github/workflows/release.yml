@@ -1,0 +1,171 @@
+name: Release
+
+# Builds the standalone `atp` binary from the canonical asupersync source tree
+# at the exact commit pinned in UPSTREAM_REV, then publishes platform tarballs
+# + SHA256SUMS as a GitHub release. This repo intentionally contains no Rust
+# source: https://github.com/Dicklesworthstone/asupersync is the single source
+# of truth for ATP code.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.3.5). Created at current main if missing.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag || '' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  UPSTREAM_REPO: Dicklesworthstone/asupersync
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - name: Checkout atp repo
+        uses: actions/checkout@v4
+
+      - name: Read upstream pin
+        id: pin
+        run: |
+          rev="$(tr -d '[:space:]' < UPSTREAM_REV)"
+          if [ -z "$rev" ]; then echo "UPSTREAM_REV is empty" >&2; exit 1; fi
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout asupersync @ pinned rev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ steps.pin.outputs.rev }}
+          path: upstream
+
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install pinned Rust toolchain
+        working-directory: upstream
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - name: Build atp
+        working-directory: upstream
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --bin atp --features atp-cli --target ${{ matrix.target }}
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist stage
+          cp "upstream/target/${{ matrix.target }}/release/atp" stage/atp
+          strip stage/atp 2>/dev/null || true
+          cp LICENSE stage/LICENSE
+          tar -C stage -czf "dist/atp-${{ matrix.target }}.tar.gz" atp LICENSE
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "atp-${{ matrix.target }}.tar.gz" > "atp-${{ matrix.target }}.tar.gz.sha256"
+          else
+            shasum -a 256 "atp-${{ matrix.target }}.tar.gz" > "atp-${{ matrix.target }}.tar.gz.sha256"
+          fi
+
+      - name: Smoke-test binary
+        run: |
+          ./stage/atp --version
+          ./stage/atp rq-keygen >/dev/null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atp-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    # Publish whatever platform legs succeeded (fail-fast is off above); the
+    # "Assemble SHA256SUMS" step refuses to publish an empty release.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout atp repo
+        uses: actions/checkout@v4
+
+      - name: Read upstream pin
+        id: pin
+        run: echo "rev=$(tr -d '[:space:]' < UPSTREAM_REV)" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        id: sums
+        run: |
+          cd dist
+          ls -la
+          if ! ls atp-*.tar.gz >/dev/null 2>&1; then
+            echo "No build artifacts present; refusing to publish an empty release" >&2
+            exit 1
+          fi
+          rm -f ./*.sha256
+          sha256sum atp-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: atp ${{ steps.tag.outputs.tag }}
+          body: |
+            Standalone `atp` CLI binaries, built from the canonical
+            [asupersync](https://github.com/Dicklesworthstone/asupersync) source at commit
+            [`${{ steps.pin.outputs.rev }}`](https://github.com/Dicklesworthstone/asupersync/commit/${{ steps.pin.outputs.rev }}).
+
+            Verify downloads against `SHA256SUMS`. Install with:
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
+            ```
+          files: |
+            dist/atp-*.tar.gz
+            dist/SHA256SUMS
