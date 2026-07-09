@@ -120,7 +120,7 @@ Link regimes: **perfect** (1 Gbit, 2 ms), **good** (200 Mbit, 25 ms, 0.1% loss),
 ### Scoreboard — plaintext tier (atp vs tuned rsync daemon)
 
 Wall-clock ratio = atp median ÷ rsync median (lower is better; **< 1.0 = atp wins**).
-Current HEAD (atp 0.3.5), all cells SHA-verified:
+Measured 2026-07-08/09 (atp 0.3.5 release build), all cells SHA-verified:
 
 | Workload | perfect | good | bad | broken |
 |----------|---------|------|-----|--------|
@@ -317,7 +317,7 @@ installs to `~/.local/bin`. Useful variants:
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --easy-mode
 
 # Specific version, with a post-install self-test
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --version v0.3.5 --verify
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --version v0.3.6 --verify
 
 # System-wide
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | sudo bash -s -- --system
