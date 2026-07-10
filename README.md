@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="atp_illustration.webp" alt="atp — fountain-coded file transfer" width="800">
+  <img src="atp_illustration.webp" alt="atp: fountain-coded file transfer" width="800">
 </p>
 
 # atp
@@ -14,8 +14,8 @@
 
 **Fountain-coded file transfer that outruns tuned rsync on real networks.**
 
-RaptorQ erasure coding over raw UDP or QUIC — loss becomes a repair budget instead of
-a retransmit stall. Every transfer is SHA-256 verified end-to-end and fails closed.
+RaptorQ erasure coding over raw UDP or QUIC turns loss into a repair budget
+instead of a retransmit stall. Every transfer is SHA-256 verified end-to-end and fails closed.
 
 <h3>Quick Install</h3>
 
@@ -29,23 +29,22 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ## TL;DR
 
-**The Problem**: Every classic transfer tool — rsync, scp, sftp — rides a single TCP
-stream. TCP interprets packet loss as congestion and collapses its window, so on real
+**The Problem**: rsync, scp, and sftp all ride a single TCP stream. TCP interprets packet loss as congestion and collapses its window, so on real
 links (WAN latency, Wi-Fi loss, congested paths, cross-continent hops) throughput
 degrades roughly with `1/(RTT·√loss)`. A 2% loss rate on an 80 ms link doesn't slow a
-TCP transfer down by 2% — it can slow it down by 10× or stall it entirely. And every
+TCP transfer down by 2%; it can slow it down by 10× or stall it entirely. And every
 lost packet costs at least a round trip to repair, because TCP must re-send *exactly
 the bytes that were lost*.
 
 **The Solution**: `atp` encodes each file into **RaptorQ fountain symbols (RFC 6330)**.
-Any K(+ε) of the N symbols sprayed at the receiver reconstruct the data — no symbol is
-special, so *which* packets got lost doesn't matter, only *how many*. Loss stops being
+Any K(+ε) of the N symbols sprayed at the receiver reconstruct the data. No symbol
+is special, so *which* packets got lost doesn't matter, only *how many*. Loss stops being
 a latency problem (round trips per lost packet) and becomes a bandwidth line item
 (a few percent of repair symbols). Feedback is a small number of bounded rounds, not
 a per-packet ACK conversation. On the fountain transports (`rq`/`quic`), the
 default zero-loss hint selects a paced reliable source stream so clean links do
 not pay the FEC tax; lossy paths require an explicit loss hint today. (The
-out-of-the-box `--transport` default is plain TCP — pick `rq` or `quic` to get
+out-of-the-box `--transport` default is plain TCP; pick `rq` or `quic` to get
 any of this.)
 
 ### Why atp?
@@ -53,11 +52,11 @@ any of this.)
 | Feature | What It Means |
 |---------|---------------|
 | **Loss-tolerant data plane** | RaptorQ symbols over UDP/QUIC turn packet loss into repair traffic instead of per-loss retransmit stalls. Across the displayed harsh-regime cells (10% loss + reorder + dup + 200 ms RTT), atp's geomean is **~1.9× faster than tuned rsync** |
-| **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed — a failed transfer never leaves partially-written garbage in the destination |
+| **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed; a failed transfer never leaves partially-written garbage in the destination |
 | **Fast on clean links too** | Adaptive path on the rq/quic transports: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
 | **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 2.9–4.8× faster than rsync across all four link regimes |
 | **Explicit security tiers** | Plain TCP is the unauthenticated default; raw UDP can use lab plaintext or per-symbol HMAC; QUIC provides TLS 1.3 with fail-closed certificate verification. `auto --no-delta` is a best-effort availability ladder and may select a weaker tier |
-| **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed — and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
+| **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed, and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
 | **1-RTT startup** | QUIC handshake instead of ssh session setup: encrypted 500 KB transfers are **3–5× faster** than rsync-over-ssh |
 
 ---
@@ -72,7 +71,7 @@ export ATP_RQ_AUTH_KEY_HEX=$(atp rq-keygen)
 # 1. On the receiving machine
 atp recv ./inbox --listen 0.0.0.0:8472 --transport rq --once
 
-# 2. On the sending machine — file or directory, fountain-coded over UDP
+# 2. On the sending machine: file or directory, fountain-coded over UDP
 atp send ./dataset receiver.example.com:8472 --transport rq
 
 # rsync-style one-liner: SSH-bootstrap a remote receiver, then stream directly
@@ -95,7 +94,7 @@ used, feedback rounds, and verification status.
 
 These numbers come from a fail-closed benchmark harness with an integrity standard
 designed so that a false win is structurally impossible. The full method, every
-result, and — just as importantly — every *refuted* optimization hypothesis are
+result, and, just as importantly, every *refuted* optimization hypothesis are
 logged in the append-only
 [evidence ledger](https://github.com/Dicklesworthstone/asupersync/blob/64ebd17d31d401b1041fb5f4c6f2605b36b36519/docs/atp_rq_beat_rsync_ledger.md)
 (over 230 numbered experiments at the source revision pinned by v0.3.7).
@@ -103,7 +102,7 @@ logged in the append-only
 ### The method (summarized)
 
 - **Opponent**: rsync with its optimal flags (`--whole-file --inplace --no-compress`)
-  on its fastest transport — the plaintext rsync daemon for the no-crypto tier, ssh
+  on its fastest transport: the plaintext rsync daemon for the no-crypto tier, ssh
   with `aes128-gcm` for the encrypted tier. Never a strawman.
 - **Crypto-symmetric**: atp's plaintext tier races the rsync daemon; atp's TLS 1.3
   tier races rsync-over-ssh. Mixing tiers is treated as an invalid experiment.
@@ -123,7 +122,7 @@ Link regimes: **perfect** (1 Gbit, 2 ms), **good** (200 Mbit, 25 ms, 0.1% loss),
 **bad** (50 Mbit, 80±20 ms, 2% loss), **broken** (10 Mbit, 200±50 ms, 10% loss +
 5% reorder + 1% duplication).
 
-### Scoreboard — plaintext tier (atp vs tuned rsync daemon)
+### Scoreboard: plaintext tier (atp vs tuned rsync daemon)
 
 Wall-clock ratio = atp median ÷ rsync median (lower is better; **< 1.0 = atp wins**).
 Measured 2026-07-08/09 with atp 0.3.5 release builds (the most recent full
@@ -161,7 +160,7 @@ cell (2,000 small files on a 1 Gbit/2 ms LAN), where rsync is ~8.6% faster and t
 result is within noise. That cell is a fixed handshake-round-trip floor, not a
 throughput gap. Missing cells and failed runs are not implied to share this result.
 
-### Scoreboard — encrypted tier (atp QUIC/TLS 1.3 vs rsync-over-ssh)
+### Scoreboard: encrypted tier (atp QUIC/TLS 1.3 vs rsync-over-ssh)
 
 Selected measured cells are mixed:
 
@@ -171,7 +170,7 @@ Selected measured cells are mixed:
 | 50 MB, good | **atp wins** (marginal, 0.98) |
 | tree (2,000 files), good | parity (1.00) |
 | 50 MB, perfect | rsync wins (1.48, noisy) |
-| 500 MB, perfect | rsync wins (1.47 — atp ~74 MB/s vs ssh ~108 MB/s) |
+| 500 MB, perfect | rsync wins (1.47; atp ~74 MB/s vs ssh ~108 MB/s) |
 | trees, perfect | rsync wins (~1.2–1.6×; an early 2.46× reading was a noisy-median artifact, per the ledger) |
 | bad / broken, large | currently gated by known issues (tracked in the ledger) |
 
@@ -179,7 +178,7 @@ Over the available encrypted cells, the good-regime geomean is **0.70 (atp wins)
 and the perfect-regime geomean is **1.10 (rsync wins ~10%)**. As with the plaintext
 table, missing workloads prevent treating these as a complete or directly comparable
 matrix. The encrypted clean-large gap is a hand-rolled-QUIC-stack vs kernel-TCP
-throughput frontier — architectural, known, and being worked. If your encrypted
+throughput frontier: architectural, known, and being worked. If your encrypted
 workload is huge single files on pristine gigabit links, rsync-over-ssh is still the
 faster tool today.
 
@@ -190,33 +189,33 @@ RSS**. Other scorecard cells vary by workload and transport; recent large/lossy
 receives reached roughly **49 MB**, so 12 MB is not a global ceiling. On the lossy
 fountain cells receiver RSS stays in rsync's neighborhood (0.4–1.6×). The honest
 trade-off is on the *sender* during lossy-tier fountain coding: peak RSS can reach
-~10× rsync's on 2–10% loss cells — that memory is the forward-repair machinery that
+~10× rsync's on 2–10% loss cells; that memory is the forward-repair machinery that
 buys convergence where TCP tools stall.
 
 ### The negative-evidence ledger
 
 Most performance READMEs list the optimizations that worked. The atp campaign also
-kept every one that *didn't*, with the mechanism of failure — so nobody re-chases
-them and so the numbers above have provenance. A sample of refuted hypotheses from
+kept every one that *didn't*, with the mechanism of failure, so nobody re-chases
+them and the numbers above keep their provenance. A sample of refuted hypotheses from
 the ledger:
 
-- Receipt-clocked flow-control credit — refuted **four times** (the bare version
+- Receipt-clocked flow-control credit: refuted **four times** (the bare version
   collapsed outright, re-sending 2× the payload; the final attempt measured a
   wash); settled with a written mechanism.
-- "Receiver ACKs too slowly (~30 ms)" — refuted by direct measurement (ACKs flow
+- "Receiver ACKs too slowly (~30 ms)": refuted by direct measurement (ACKs flow
   every ~1.3 ms; the latency was repair-episode smearing).
-- BDP-based in-flight caps — refuted twice (the transport's RTT estimator was being
+- BDP-based in-flight caps: refuted twice (the transport's RTT estimator was being
   fed by a synthetic clock; the "evidence" was manufactured by a sample clamp).
-- SIMD GF(256) kernels for decode — zero benefit (the wall was the serial symbol
+- SIMD GF(256) kernels for decode: zero benefit (the wall was the serial symbol
   intake pump, not the field arithmetic).
-- Bigger flow windows — refuted in both directions (2 MiB is a measured optimum:
+- Bigger flow windows: refuted in both directions (2 MiB is a measured optimum:
   4 MiB improved delivery rate but exploded repair traffic 39 → 289 MB).
-- Sender "spray faster" — refuted three times (you cannot outrun the receiver's
+- Sender "spray faster": refuted three times (you cannot outrun the receiver's
   drain rate).
 
-Each landed improvement — the delivery-rate sampler, PROBE_BW-style gain cycling,
-the bounded receive window, zero-copy receive, packed trees, the source-stream fast
-path — survived a deterministic lab gate *and* a same-day A/B against its parent
+Each landed improvement (the delivery-rate sampler, PROBE_BW-style gain cycling,
+the bounded receive window, zero-copy receive, packed trees, the source-stream
+fast path) survived a deterministic lab gate *and* a same-day A/B against its parent
 commit before it was believed.
 
 ---
@@ -248,7 +247,7 @@ commit before it was believed.
   authenticates this plane; raw RQ's TCP control plane currently does not.
 - **Data plane** (QUIC DATAGRAMs, or raw UDP across N sockets): RaptorQ source and
   repair symbols. Unordered, unacknowledged per-packet, loss-absorbed by coding.
-  Because RaptorQ is *rateless*, every repair round generates brand-new symbols —
+  Because RaptorQ is *rateless*, every repair round generates brand-new symbols;
   the sender never needs to know which packets were lost.
 
 This split is the core design decision: TCP-style reliability never fights the
@@ -257,13 +256,13 @@ metadata that genuinely needs it.
 
 ### The adaptive path
 
-The FEC spray is not always the right tool, and atp knows it:
+The FEC spray is not always the right tool, so the path is chosen per transfer:
 
 - **The default zero-loss hint** → a reliable, paced *source stream*: BBR-style delivery-rate
   sampling (per-packet delivered counters, wall-clock intervals), a PROBE_BW-style
   gain cycle (1.25 probe / 0.75 drain / 6× cruise per RTprop), and a bounded 2 MiB
   receive window advertised loss-proof on every ACK. Measured at ~946 Mbit/s on a
-  1 Gbit path — effectively line rate.
+  1 Gbit path, which is effectively line rate.
 - **A nonzero `--rq-round0-loss-pct`** → the RaptorQ spray with proactive repair
   overhead sized from that supplied loss hint, arrival-driven pacing, and bounded
   feedback rounds. v0.3.7 does not passively detect link loss before choosing the
@@ -272,14 +271,14 @@ The FEC spray is not always the right tool, and atp knows it:
   (2,000-file tree → 1 entry) so tiny files don't each pay a coding + round-trip
   floor; the Merkle commitment is still over the logical files on both sides.
 - `--transport auto` tries QUIC → RaptorQ/UDP → TCP and records each attempt in
-  the transfer report. (With delta planning enabled — the default — `auto` goes
-  straight to TCP; see [Limitations](#limitations).)
+  the transfer report. (With delta planning enabled, which is the default, `auto`
+  goes straight to TCP; see [Limitations](#limitations).)
 
-### Verification is structural, not optional
+### Verification cannot be turned off
 
 Every entry is staged, hash-verified (SHA-256 per chunk and per file, Merkle root
 per transfer), and only then committed to the destination. There is no flag to skip
-verification. A transfer that cannot verify **fails closed** — partial or corrupt
+verification. A transfer that cannot verify **fails closed**: partial or corrupt
 data never lands in your destination path, and interrupted transfers never expose
 partially-verified output.
 
@@ -288,7 +287,7 @@ partially-verified output.
 For re-syncing changed files, atp uses a two-level delta codec:
 
 1. **Chunk level**: content-defined chunking (FastCDC) with a content-addressed
-   store and IBLT set reconciliation — the endpoints discover *which chunks differ*
+   store and IBLT set reconciliation; the endpoints discover *which chunks differ*
    with communication proportional to the delta, not the file size.
 2. **Sub-chunk level**: within a changed chunk, a classic rolling-checksum diff
    (64-byte sub-blocks, weak rolling hash + truncated SHA-256 strong hash) emits
@@ -297,7 +296,7 @@ For re-syncing changed files, atp uses a two-level delta codec:
 Reconstructed chunks are re-verified against the manifest hash, so even a
 strong-checksum collision cannot commit wrong bytes. Delta is on by default for
 re-syncs; `--no-delta` forces whole-object transfer. The receiver keeps its delta
-state in a `.asupersync-atp-delta-v1` directory inside the destination — that
+state in a `.asupersync-atp-delta-v1` directory inside the destination; the
 hidden directory is expected, and safe to delete if you never re-sync.
 
 ---
@@ -314,7 +313,7 @@ whenever a minimum security tier matters.
 | **Plain TCP** | `--transport tcp` (default) | No transport authentication or encryption. Use only on trusted links or inside an authenticated tunnel |
 | **Lab / plaintext** | `--rq-allow-unauthenticated-lab` (both ends) | No crypto. For benchmarks, airgapped labs, and trusted links only. The flag name is deliberately embarrassing to type in production |
 | **Symbol-authenticated** | `--rq-auth-key-hex <64-hex>` (both ends, or env `ATP_RQ_AUTH_KEY_HEX`) | Per-symbol HMAC on every UDP symbol. Forged symbol payloads are rejected before decode, but the TCP control stream/manifest is not authenticated and signed symbols are not session-bound or replay-protected. Generate keys with `atp rq-keygen` |
-| **Encrypted** | `--transport quic` + receiver `--server-cert/--server-key`, sender `--ca/--server-name` | Full TLS 1.3 with real X.509 verification (chain, hostname, signature — fail-closed, no `--insecure` escape hatch); every packet, symbols included, is authenticated and encrypted by the QUIC 1-RTT AEAD |
+| **Encrypted** | `--transport quic` + receiver `--server-cert/--server-key`, sender `--ca/--server-name` | Full TLS 1.3 with real X.509 verification (chain, hostname, signature; fail-closed, with no `--insecure` escape hatch); every packet, symbols included, is authenticated and encrypted by the QUIC 1-RTT AEAD |
 
 Details that matter (from the
 [threat model](https://github.com/Dicklesworthstone/asupersync/blob/64ebd17d31d401b1041fb5f4c6f2605b36b36519/docs/quic_atp_threat_model.md)):
@@ -378,7 +377,7 @@ bash install.sh --offline ./atp-x86_64-unknown-linux-musl.tar.gz --checksum <sha
 
 The hardened workflow on `main` requires all six tarballs below plus `SHA256SUMS`
 before publishing. The current v0.3.7 release predates that gate and ships five
-(no aarch64 musl yet — the installer automatically falls back to the aarch64
+(no aarch64 musl yet; the installer automatically falls back to the aarch64
 glibc build). Older releases may have a smaller platform set:
 
 | Platform | Artifact |
@@ -407,7 +406,7 @@ git clone https://github.com/Dicklesworthstone/atp && cd atp
 scripts/build-atp.sh --pinned          # → dist/atp
 ```
 
-`--features atp-cli` is the complete binary — it includes the TLS support the
+`--features atp-cli` is the complete binary: it includes the TLS support the
 encrypted QUIC tier requires. Expect a substantial compile (it builds the full
 asupersync runtime).
 
@@ -425,12 +424,12 @@ ssh, then streams over the chosen transport).
 
 ```
 --transport auto|tcp|rq|quic   Transport (default tcp; rq = RaptorQ/UDP;
-                               auto = quic→rq→tcp, needs --no-delta — delta-enabled auto sends TCP only)
+                               auto = quic→rq→tcp, needs --no-delta; delta-enabled auto sends TCP only)
 --rq-auth-key-hex HEX          Per-symbol auth key (or ATP_RQ_AUTH_KEY_HEX)
 --rq-allow-unauthenticated-lab Lab tier: explicitly disable symbol auth
 --ca PATH --server-name NAME   QUIC: verify the receiver's TLS certificate
 --bwlimit BYTES_PER_SEC        Hard pacing cap (quic/auto transports)
---max-bytes N                  Transfer size ceiling (default 4 GiB — raise for bigger)
+--max-bytes N                  Transfer size ceiling (default 4 GiB; raise for bigger)
 --workers N                    Parallel workers (default 4)
 --symbol-size N                RaptorQ symbol size (default: 1400 on rq; auto-sized to fit a QUIC datagram on quic)
 --repair-overhead X            Proactive repair factor (e.g. 1.1 = +10% repair symbols)
@@ -451,12 +450,12 @@ the persistent daemon-style form of the same thing.
 --once                         Exit after one transfer (recv)
 --server-cert PATH --server-key PATH   QUIC: TLS certificate + key to present
 --rq-auth-key-hex HEX          Per-symbol auth key (must match sender)
---max-bytes N / --workers N / --symbol-size N   As on the sender (symbol size must match —
-                               automatic when neither end sets it: the defaults agree per transport)
+--max-bytes N / --workers N / --symbol-size N   As on the sender (symbol size must match;
+                               automatic when neither end sets it, since the defaults agree per transport)
 ```
 
 Note on ports: the receiver's delta-planning sidecar listens on **listen-port + 1**
-(e.g. `8472` → sidecar `8473`). If a firewall blocks it, transfers still work — the
+(e.g. `8472` → sidecar `8473`). If a firewall blocks it, transfers still work; the
 sender logs a warning and falls back to full-object transfer. This sidecar is
 currently plaintext, unauthenticated, serial, and lacks a message-size cap; do not
 expose it to untrusted networks. Use `--no-delta` on both ends or restrict the port
@@ -471,19 +470,19 @@ Print a fresh 32-byte symbol-authentication key as hex. Share it with both ends
 ### Encrypted-tier example (QUIC + TLS 1.3)
 
 ```bash
-# Receiver: present a TLS certificate (any serverAuth-EKU leaf works — e.g. step-ca,
+# Receiver: present a TLS certificate (any serverAuth-EKU leaf works: step-ca,
 # mkcert, or your internal CA)
 atp recv ./inbox --listen 0.0.0.0:8472 --transport quic --once \
   --server-cert cert.pem --server-key key.pem
 
-# Sender: verify that certificate — fail-closed, no skip-verify option
+# Sender: verify that certificate; fail-closed, no skip-verify option
 atp send ./dataset receiver.example.com:8472 --transport quic \
   --ca ca.pem --server-name receiver.example.com
 ```
 
 That's the whole invocation. Symbol sizing is automatic per transport (QUIC picks
 the largest symbol that fits one datagram; an explicitly oversized `--symbol-size`
-still fails closed with a clear error). No `--rq-auth-key-hex` is needed — QUIC's
+still fails closed with a clear error). No `--rq-auth-key-hex` is needed: QUIC's
 TLS 1.3 AEAD already authenticates every symbol datagram, and atp prints a notice
 if you pass one anyway. In v0.3.7 the CLI does **not** load system roots into this
 QUIC verifier, despite the current `--help` text; pass `--ca` explicitly.
@@ -492,7 +491,7 @@ QUIC verifier, despite the current `--help` text; pass `--ca` explicitly.
 
 ## Limitations
 
-Honesty section — read before deploying:
+Read this section before deploying:
 
 - **Encrypted clean-large is rsync's turf today.** On pristine gigabit links moving
   huge single files, rsync-over-ssh beats atp's QUIC tier by ~1.5× (and ~1.3–1.6×
@@ -512,8 +511,8 @@ Honesty section — read before deploying:
   fail-closed default).
 - **`--transport auto` restricts itself to TCP while delta planning is enabled**
   (the default). Explicit `--transport rq` / `--transport quic` work fine with
-  delta on — the planner simply falls back to full-object transfer when the
-  receiver has no delta state — but `auto`'s QUIC→RQ→TCP ladder only engages
+  delta on (the planner simply falls back to full-object transfer when the
+  receiver has no delta state), but `auto`'s QUIC→RQ→TCP ladder only engages
   with `--no-delta`.
 - **`auto --no-delta` is not a security policy.** It falls back after any transport
   error, including QUIC certificate failures and RQ authentication failures, and can
@@ -537,12 +536,12 @@ Honesty section — read before deploying:
 The RaptorQ/UDP transport refuses to run unauthenticated unless you explicitly opt
 into the lab tier. Either share a key (`atp rq-keygen` → `--rq-auth-key-hex` on both
 ends), use the `user@host:/path` SSH bootstrap (atp generates a per-transfer key for
-you over the ssh channel), or — on a trusted lab link only — pass
+you over the ssh channel), or, on a trusted lab link only, pass
 `--rq-allow-unauthenticated-lab` on both ends.
 
 ### QUIC handshake fails with a certificate error
 
-That's the point — the sender verifies the receiver's certificate chain, hostname,
+That's the point: the sender verifies the receiver's certificate chain, hostname,
 and validity, and there is no `--insecure` bypass. Make sure `--ca` points at the CA
 that signed the receiver's `--server-cert`; v0.3.7 does not load system roots for
 this CLI path. Also ensure `--server-name` matches a SAN in that certificate
@@ -558,7 +557,7 @@ ceiling). The default is a fail-closed guard, not a hard capability limit.
 The QUIC transport carries one symbol per 1200-byte datagram, and each symbol
 wears a 56-byte envelope. Since v0.3.7 the QUIC symbol size is chosen
 automatically, so this error only appears when you **explicitly** pass
-`--symbol-size` larger than 1144 with `--transport quic` — drop the flag (or use
+`--symbol-size` larger than 1144 with `--transport quic`. Drop the flag (or use
 ≤ 1144 on both ends). On older releases the flag was required; upgrade instead.
 
 ### Transfers are slow in a debug build
@@ -588,7 +587,7 @@ On lossy/latent links: fountain coding converts loss from a round-trip problem i
 a bandwidth problem, and a purpose-built congestion controller (delivery-rate
 sampling + gain cycling) keeps the pipe full without collapsing it. On clean links:
 a paced reliable stream at line rate, 1-RTT setup, and packed small-file trees. The
-[benchmark section](#benchmarks-atp-vs-rsync) links the full evidence ledger — every
+[benchmark section](#benchmarks-atp-vs-rsync) links the full evidence ledger; every
 number is a SHA-verified median against optimally-flagged rsync, and the cells rsync
 still wins are listed right next to the ones it doesn't.
 
@@ -636,8 +635,8 @@ for protocol/engine internals. Bug reports are genuinely welcome.
 This repository is the **product/distribution home** for the `atp` CLI: README,
 installer, release automation, and a pin (`UPSTREAM_REV`) of the exact
 [asupersync](https://github.com/Dicklesworthstone/asupersync) commit each release is
-built from. The canonical source — `src/bin/atp.rs`, `src/atp/`, `src/net/atp/`,
-`src/raptorq/`, the benchmark harness, and the evidence ledger — lives in asupersync
+built from. The canonical source (`src/bin/atp.rs`, `src/atp/`, `src/net/atp/`,
+`src/raptorq/`, the benchmark harness, and the evidence ledger) lives in asupersync
 and is developed there. Release binaries here contain *only* the `atp` tool, built
 with `cargo build --release --locked --bin atp --features atp-cli`.
 
