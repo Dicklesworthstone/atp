@@ -10,6 +10,8 @@ Rust project built-in fountain-coded, SHA-verified transfer capability.
 asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "<UPSTREAM_REV>", features = ["quic", "tls"] }
 # crates.io may lag the git head; check the published version before using
 # `version = "…"`. rq/tcp tiers need no extra features; quic needs quic+tls.
+# (Library consumers pick features; the atp BINARY always has QUIC/TLS —
+# its required atp-cli feature bundles them.)
 ```
 
 Toolchain: asupersync's default features require the **nightly** toolchain

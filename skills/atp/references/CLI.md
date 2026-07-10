@@ -24,6 +24,8 @@ then streams directly; needs `atp` on the remote PATH).
 | `--repair-overhead X` | proactive repair factor ≥ 1.0 (1.1 = +10% repair symbols) |
 | `--rq-round0-loss-pct P` | size round-0 repair for an expected loss rate; also enables loss-matched pacing behavior |
 | `--streams N` | UDP fan-out sockets for the rq symbol spray |
+| `--data-host HOST` | ssh-bootstrap mode: override the host/IP the DATA plane dials after ssh setup. Required when the ssh target is a config alias (e.g. `Host trj`) that DNS cannot resolve — atp otherwise uses the same name for both ssh and the direct data connection |
+| `--remote-listen ADDR:PORT` | ssh-bootstrap mode: where the spawned remote receiver binds (default `0.0.0.0:8472`) |
 | `--dry-run` | print the transfer plan JSON (file list, sizes, Merkle root); no connection |
 | `--no-delta` | force whole-object transfer; also the switch that lets `auto` climb past tcp |
 

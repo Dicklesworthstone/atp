@@ -11,12 +11,13 @@ dependencies:
 
 # atp — fountain-coded file transfer
 
-<!-- TOC: Dispatch | One Rule | Boundary Card | Choose a Transport | Canonical Invocations | Exit Codes & Report | Gotchas | Failure→Fix | Anti-Patterns | Reference Index -->
+<!-- TOC: Dispatch | One Rule | Transport Policy | Peer Profiles | Boundary Card | Choose a Transport | Canonical Invocations | Exit Codes & Report | Gotchas | Failure→Fix | Anti-Patterns | Reference Index -->
 
 ## Dispatch (start here)
 
 | You need to… | Do |
 |--------------|----|
+| Send to a machine you've sent to before | `~/.config/atp/peers/<host>.md` — reuse the saved command verbatim; do NOT rediscover transport/certs/data-host |
 | Verify atp works in this environment | `scripts/smoke.sh` (real loopback transfer, exit 0 = healthy) |
 | Send/receive a file or tree | Canonical Invocations below — pick the row from Choose a Transport first |
 | Judge whether a transfer succeeded | exit code 0, or pipe the report into `scripts/check-report.sh` |
@@ -31,6 +32,32 @@ Never trade integrity for speed, and never claim a speed atp did not earn.
 Every transfer is SHA-256 verified and fails closed; every performance claim
 must trace to the append-only evidence ledger (see Provenance). If a transfer
 did not commit (`"committed": true` in the JSON report), it did not happen.
+
+## Transport Policy (standing owner preference)
+
+**"Optimal" means the fountain tiers: always `quic` (RaptorQ symbols under
+TLS 1.3); `rq` as the fallback when QUIC is blocked. Never plain `tcp` for
+interactive sends** — the fountain-coded data plane is the entire point of
+atp; a tcp transfer is what rsync already does. QUIC/TLS is built into every
+atp binary (no feature flags, no extra install), and the ssh-bootstrap
+one-liner works with `--transport quic` too. The Choose a Transport table
+below is generic protocol guidance, not permission to pick tcp for
+convenience.
+
+## Peer Profiles (zero-rediscovery repeat sends)
+
+- Before any send, check `~/.config/atp/peers/<host>.md`. If present, reuse
+  the saved command verbatim — transport, `--data-host`, cert paths,
+  `--server-name`, quirks are already solved.
+- After the first successful transfer to a NEW peer (or when settings
+  change), write that file: the exact working command, why each non-default
+  flag is there, cert locations + expiry, last-verified date + result.
+  Template: [PEER-TEMPLATE.md](references/PEER-TEMPLATE.md).
+- Profiles live under `~/.config/atp/` — NOT inside the skill folder — so
+  skill upgrades/reinstalls never delete them, and both the Claude and Codex
+  copies of the skill share them.
+- Profiles carry no secrets: quic needs no symbol key (TLS AEAD covers it)
+  and ssh bootstrap generates per-transfer rq keys; store only paths/flags.
 
 ## Boundary Card (v0.3.7, 2026-07-10)
 
@@ -48,9 +75,12 @@ did not commit (`"committed": true` in the JSON report), it did not happen.
 
 ## Choose a Transport
 
+(Generic protocol guidance — the Transport Policy above overrides this for
+interactive sends: quic first, rq fallback.)
+
 | Situation | Transport | Auth you must provide |
 |-----------|-----------|----------------------|
-| Default / delta re-sync wanted | `tcp` (default) | none |
+| CLI default; scripted/legacy pipelines | `tcp` | none |
 | Lossy/latent link (Wi-Fi, WAN, cross-continent) | `rq` | `atp rq-keygen` key on both ends, or `--rq-allow-unauthenticated-lab` on both (trusted lab only) |
 | Encryption required | `quic` | receiver `--server-cert/--server-key`; sender `--ca` unless the cert chains to a system root |
 | "Just pick the best" | `auto` (quic→rq→tcp) | **only engages beyond TCP with `--no-delta`** (br-asupersync-dg8juf) |
@@ -136,6 +166,11 @@ More: [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md)
   `-aW --inplace --no-compress` (+ `aes128-gcm` over ssh) — see OPERATIONS.md.
 - **Don't retry a failed transfer blind.** Read `atp failed: <reason>` on
   stderr first — fail-closed errors state the exact fix.
+- **Don't interpret "optimal" as "least setup" and quietly use tcp.** The
+  owner's standing policy is quic (rq fallback); tcp forfeits the fountain
+  data plane that justifies using atp at all.
+- **Don't rediscover a known peer.** Check `~/.config/atp/peers/<host>.md`
+  first; write it after any first successful transfer.
 
 ## Reference Index
 
@@ -145,6 +180,7 @@ More: [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md)
 | Playbooks: keys/certs, ssh bootstrap, daemon, tuning, honest benchmarking | [OPERATIONS.md](references/OPERATIONS.md) |
 | Exact error strings → root cause → fix | [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
 | Library embedding (crate features, Cx runtime, module map) | [LIBRARY.md](references/LIBRARY.md) |
+| Save a known-good peer setup for instant reuse | [PEER-TEMPLATE.md](references/PEER-TEMPLATE.md) → `~/.config/atp/peers/<host>.md` |
 | Where these claims come from (ledger, beads, commits) | [PROVENANCE.md](references/PROVENANCE.md) |
 
 Source of truth when this skill disagrees with reality: the asupersync

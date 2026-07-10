@@ -43,6 +43,13 @@ bootstrap has `--ssh-ready-timeout-secs`); two transfers sharing the same
 socket pair (serialize them). Symptom signature `connect timeout + zero
 packets received` = the path is black-holed, not slow.
 
+**ssh-bootstrap send fails after the remote receiver starts (name resolution / connect failure on the data plane)**
+The `user@host:/path` host is used for BOTH the ssh control channel and the
+direct data connection. An ssh-config alias (`Host trj`) resolves for ssh but
+not for the data dial. Fix: `--data-host <real-ip-or-dns-name>` — keeps the
+alias (and its IdentityFile) for ssh while pointing the data plane at a
+resolvable address. Save this in the peer profile so it's never rediscovered.
+
 **`Address already in use` immediately after a previous run**
 TIME_WAIT on the old socket. Wait a few seconds or change `--listen`.
 
