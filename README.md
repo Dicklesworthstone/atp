@@ -9,7 +9,7 @@
 [![License: MIT+Rider](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/Dicklesworthstone/atp)](https://github.com/Dicklesworthstone/atp/releases/latest)
 [![Rust](https://img.shields.io/badge/Rust-nightly-orange.svg)](https://www.rust-lang.org/)
-[![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS-lightgrey.svg)](#installation)
+[![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#installation)
 [![Source](https://img.shields.io/badge/Source-asupersync-8A2BE2.svg)](https://github.com/Dicklesworthstone/asupersync)
 
 **Fountain-coded file transfer that outruns tuned rsync on real networks.**
@@ -19,6 +19,12 @@ instead of a retransmit stall. Every transfer is SHA-256 verified end-to-end and
 
 <h3>Quick Install</h3>
 
+**Prebuilt releases v0.3.8 and newer require
+[Minisign](https://jedisct1.github.io/minisign/) on `PATH` so the archive can be
+authenticated with ATP's embedded key. The unsigned v0.3.7 release is a
+narrow legacy exception: online installs still require SHA-256, print a prominent
+unauthenticated-release warning, and do not claim publisher authenticity.**
+
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
@@ -26,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ```powershell
 # Windows (PowerShell 5.1+)
-irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1)))
 ```
 
 </div>
@@ -63,6 +69,7 @@ any of this.)
 | **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 2.9–4.8× faster than rsync across all four link regimes |
 | **Explicit security tiers** | Plain TCP is the unauthenticated default; raw UDP can use lab plaintext or per-symbol HMAC; QUIC provides TLS 1.3 with fail-closed certificate verification. `auto --no-delta` is a best-effort availability ladder and may select a weaker tier |
 | **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed, and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
+| **Multi-donor bonding** | N machines holding the same file feed one receiver simultaneously — disjoint slices of one fountain, donor-death repair reallocation, one `bond-pull` command (binaries after v0.3.7) |
 | **1-RTT startup** | QUIC handshake instead of ssh session setup: encrypted 500 KB transfers are **3–5× faster** than rsync-over-ssh |
 
 ---
@@ -72,7 +79,8 @@ any of this.)
 ```bash
 # 0. One-time: generate a symbol-authentication key (32 bytes, hex) and share
 #    it with both machines (env var ATP_RQ_AUTH_KEY_HEX also works)
-export ATP_RQ_AUTH_KEY_HEX=$(atp rq-keygen)
+ATP_RQ_AUTH_KEY_HEX=$(atp rq-keygen)
+export ATP_RQ_AUTH_KEY_HEX
 
 # 1. On the receiving machine
 atp recv ./inbox --listen 0.0.0.0:8472 --transport rq --once
@@ -83,6 +91,9 @@ atp send ./dataset receiver.example.com:8472 --transport rq
 # rsync-style one-liner: SSH-bootstrap a remote receiver, then stream directly
 # (needs `atp` on the remote host; a per-transfer auth key is generated for you)
 atp send ./dataset user@receiver.example.com:/backups/dataset --transport rq
+
+# Pull one file from your whole fleet at once (multi-donor bonding)
+atp bond-pull /data/big.tar ./inbox --donors ubuntu@h1,ubuntu@h2 --advertise 10.0.0.5:8473
 
 # Long-running receive daemon (accepts transfer after transfer)
 atp serve ./inbox --transport rq
@@ -305,6 +316,35 @@ re-syncs; `--no-delta` forces whole-object transfer. The receiver keeps its delt
 state in a `.asupersync-atp-delta-v1` directory inside the destination; the
 hidden directory is expected, and safe to delete if you never re-sync.
 
+### Multi-donor bonding (pull one object from N machines at once)
+
+Fountain coding makes multi-source transfer almost embarrassingly natural:
+because any K(+ε) symbols reconstruct a block regardless of *which* symbols
+they are, N machines holding a byte-identical copy can each spray a
+**residue-disjoint slice of the same RaptorQ fountain** at one receiver — no
+coordination about who sends which bytes, duplicates impossible by
+construction, aggregate goodput scaling with donor count, and loss on one
+donor repaired by symbols from another. If a donor dies mid-transfer, its
+outstanding repair windows are reallocated to the survivors and the transfer
+still commits.
+
+The correctness invariant is enforced, not assumed: every donor proves it
+holds the exact same bytes (a Merkle holding-proof against a transfer
+descriptor derived from the *portable content shape*, so fleet replicas with
+different mtimes or OSes still agree), enrollment assigns each donor its
+index and slice server-side, and the commit is the same fail-closed
+stage → SHA-256/Merkle-verify → commit as every other atp transfer.
+
+```bash
+# One command on the receiving machine (donors need atp on PATH over ssh):
+atp bond-pull /data/big.tar ./inbox \
+  --donors ubuntu@h1,ubuntu@h2,ubuntu@h3 \
+  --advertise 10.0.0.5:8473    # the control address donors dial (explicit)
+```
+
+Available on `main` and in release binaries **after v0.3.7** (older binaries
+have no `bond-` subcommands — both ends must be current).
+
 ---
 
 ## Security Model
@@ -353,6 +393,31 @@ Details that matter (from the
 
 ### Quick install (recommended)
 
+For releases v0.3.8 and newer, prebuilt installs are fail-closed: install
+[Minisign](https://jedisct1.github.io/minisign/) first and ensure `minisign`
+(or `minisign.exe` on Windows) is on `PATH`. The installer requires both the
+published SHA-256 checksum and a valid `<archive>.minisig`; a missing tool,
+sidecar, or valid signature aborts the install.
+
+There is one compatibility exception for older online releases. A canonical
+release version strictly below v0.3.8, including the unsigned v0.3.7,
+may install when its `.minisig` is confirmed absent, but only after mandatory
+SHA-256 verification and a prominent **UNAUTHENTICATED LEGACY RELEASE** warning.
+That checksum detects accidental corruption against the published checksum; it
+does not authenticate the publisher. If any legacy release does publish a
+signature, the installer requires Minisign and verifies it instead of taking the
+exception. Unknown or malformed versions never qualify. Offline installs never
+qualify either: every verified offline archive, regardless of version, requires
+its sibling signature and Minisign verification.
+
+```bash
+# Ubuntu / Debian
+sudo apt-get update && sudo apt-get install -y minisign
+
+# macOS
+brew install minisign
+```
+
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
@@ -360,19 +425,26 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ```powershell
 # Windows (PowerShell 5.1+)
-irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1)))
+
+# Add the install directory to your User PATH and run the post-install self-test
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1))) -EasyMode -Verify
 ```
 
 The installer detects your platform, downloads the right prebuilt binary from the
-latest GitHub release, requires its SHA-256 to match the published `SHA256SUMS`, and
-installs to `~/.local/bin`. Useful variants:
+latest GitHub release, requires its SHA-256 to match the published `SHA256SUMS`,
+applies the signature policy above, and installs to `~/.local/bin` on Linux/macOS or
+`%USERPROFILE%\.local\bin` on Windows. The PowerShell installer supports native
+Windows x64 on PowerShell 5.1+. Offline installs require the signed release
+archive, its sibling `<archive>.minisig`, and either an explicit checksum or the
+published checksum file. Useful variants:
 
 ```bash
 # Auto-add ~/.local/bin to your PATH
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --easy-mode
 
 # Specific version, with a post-install self-test
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --version v0.3.7 --verify
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --version v0.3.8 --verify
 
 # System-wide
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | sudo bash -s -- --system
@@ -380,9 +452,13 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 # Build from the pinned source instead of downloading a binary
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --from-source
 
-# Air-gapped: install a pre-downloaded tarball with an explicit checksum
-# (download install.sh + the tarball + SHA256SUMS on a connected machine first)
-bash install.sh --offline ./atp-x86_64-unknown-linux-musl.tar.gz --checksum <sha256>
+# Air-gapped: install a pre-downloaded signed release tarball.
+# On a connected machine, download install.sh, the tarball, the matching
+# <tarball>.minisig sidecar, and SHA256SUMS. Transfer all four files together;
+# keep the signature beside the archive under its published name.
+ARCHIVE=./atp-x86_64-unknown-linux-musl.tar.gz
+ARCHIVE_SHA256=$(awk -v name="$(basename "$ARCHIVE")" '$2 == name { print $1 }' SHA256SUMS)
+bash install.sh --offline "$ARCHIVE" --checksum "$ARCHIVE_SHA256"
 
 # Also install the atp agent skill for Claude Code / Codex without being asked
 # (interactive installs offer it; --no-skill suppresses the prompt;
@@ -392,10 +468,11 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ### Prebuilt binaries
 
-The hardened workflow on `main` requires all six tarballs below plus `SHA256SUMS`
-before publishing. The current v0.3.7 release predates that gate and ships five
-(no aarch64 musl yet; the installer automatically falls back to the aarch64
-glibc build). Older releases may have a smaller platform set:
+Beginning with v0.3.8, the hardened release gate on `main` requires all seven release
+archives below plus `SHA256SUMS` before publishing. The v0.3.7 release predates
+that gate and ships five (no aarch64 musl or Windows archive yet; the installer
+automatically falls back to the aarch64 glibc build). Older releases may have a
+smaller platform set:
 
 | Platform | Artifact |
 |----------|----------|
@@ -405,6 +482,7 @@ glibc build). Older releases may have a smaller platform set:
 | Linux aarch64 (glibc 2.39+) | `atp-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon | `atp-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `atp-x86_64-apple-darwin.tar.gz` |
+| Windows x64 (native MSVC) | `atp-x86_64-pc-windows-msvc.zip` |
 
 ### From source
 
@@ -419,7 +497,8 @@ cargo install --git https://github.com/Dicklesworthstone/asupersync asupersync \
   --bin atp --features atp-cli
 
 # Or build the same pinned source snapshot used by this repository
-git clone https://github.com/Dicklesworthstone/atp && cd atp
+git clone https://github.com/Dicklesworthstone/atp
+cd atp || exit 1
 scripts/build-atp.sh --pinned          # → dist/atp
 ```
 
@@ -478,6 +557,36 @@ currently plaintext, unauthenticated, serial, and lacks a message-size cap; do n
 expose it to untrusted networks. Use `--no-delta` on both ends or restrict the port
 to trusted senders.
 
+### `atp bond-pull` / `atp bond-recv` / `atp bond-donate`
+
+Multi-donor bonding (binaries after v0.3.7). `bond-pull` is the one-command
+orchestrator, run on the receiving machine:
+
+```
+atp bond-pull <SRC-ON-DONORS> <DEST> --donors user@h1,user@h2,…
+    --advertise IP:PORT            Control address donors dial — explicit; a
+                                   wildcard --listen with no --advertise fails closed
+    [--listen 0.0.0.0:8473] [--udp-bind IP] [--remote-atp PATH]
+    [--remote-shell auto|posix|powershell] [--ssh-option OPT]*
+    [--descriptor-timeout-secs N] [rq tuning + auth flags as on atp send]
+```
+
+It fetches the transfer descriptor from the first donor over ssh, runs the
+bonded receiver in-process, and ssh-launches one `bond-donate` per host with
+a per-transfer auth key (or your `--rq-auth-key-hex`). The manual legs:
+
+```
+atp bond-recv <DEST> <SOURCE> --expect-donors N [--listen ...] [--udp-bind IP]
+    # <SOURCE> = local byte-identical copy, used only to derive the descriptor
+    # (never transmitted; enrollment fail-closes on any mismatch)
+atp bond-donate <SOURCE> --to <RECEIVER-CONTROL-HOST:PORT>
+    # donor identity (index/count) is assigned server-side at enrollment;
+    # exits nonzero unless the receiver actually committed
+```
+
+The receiver's JSON report adds `enrolled_donors`, per-donor `donor_ingress`
+(symbols received/accepted/duplicates), and `reallocated_repair_windows`.
+
 ### `atp rq-keygen`
 
 Print a fresh 32-byte symbol-authentication key as hex. Share it with both ends
@@ -518,9 +627,10 @@ Read this section before deploying:
   peak at ~10× rsync's RSS on 2–10% loss cells. Recent receiver examples range from
   ~12 MB for a 5 GB encrypted stream to ~49 MB on a large/lossy cell. If your sender
   is memory-starved *and* your link is lossy, budget for it.
-- **Linux is the primary platform.** The benchmark matrix and production hardening
-  are Linux (epoll/io_uring). macOS builds and runs (kqueue) but has not been through
-  the same benchmark gauntlet. No Windows support.
+- **Linux is the primary benchmark platform.** The benchmark matrix and production
+  hardening are Linux (epoll/io_uring). macOS (kqueue) and native Windows x64
+  (MSVC) are supported release targets, but neither has been through the same
+  benchmark gauntlet as Linux.
 - **Not an rsync drop-in.** No `--exclude` filters, no `--delete`, no permissions-
   preserving mirror mode semantics beyond what the manifest carries. atp moves data
   fast and verified; it is not (yet) a full mirroring toolchain.
