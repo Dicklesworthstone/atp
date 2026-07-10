@@ -27,7 +27,7 @@ dependencies:
 | Look up a flag's exact semantics | [CLI.md](references/CLI.md) |
 | Set up keys/certs, tune a lossy link, benchmark | [OPERATIONS.md](references/OPERATIONS.md) |
 | Embed transfer capability in a Rust project | [LIBRARY.md](references/LIBRARY.md) — atp is the `asupersync` crate's transfer subsystem |
-| Pull one file from MANY machines at once (multi-donor "bonding") | LIBRARY.md § Bonding — library-tier today; CLI (`atp bond-pull` etc.) is in active development upstream, do NOT invent flags for it |
+| Pull one file/tree from MANY machines at once (multi-donor "bonding") | `atp bond-pull SRC DEST --donors u@h1,u@h2 --advertise <my-ip:port>` — one command; see Multi-Donor Pull below (binaries ≥ v0.3.8 / current main) |
 
 ## One Rule
 
@@ -101,8 +101,9 @@ becoming reachable is a natural moment to offer this.
   QUIC or they fail closed at startup.
 - `--rq-auth-key-hex` on `--transport quic` is ignored (QUIC's TLS 1.3 AEAD
   already authenticates datagrams); ≥0.3.7 prints a notice saying so.
-- Multi-donor bonding (N machines → one receiver, same file) is library-tier
-  only in v0.3.7 — no `bond-` CLI subcommands yet (in development upstream).
+- Multi-donor bonding has a full CLI trio (`bond-donate` / `bond-recv` /
+  `bond-pull`) on main and in binaries **after** v0.3.7 — a v0.3.7-or-older
+  `atp --help` has no `bond-` subcommands; update both ends first.
 - Honest losing cells (do not oversell): encrypted single huge files on
   pristine fast links (rsync-over-ssh ~1.5×, trees ~2.5×); sender RSS can
   peak ~10× rsync's on 2–10% loss links (receiver stays ≤ 18 MB).
@@ -144,6 +145,33 @@ atp send ./dataset user@host:/backups/dataset --transport rq
 atp serve ./inbox --transport rq --rq-auth-key-hex "$KEY"   # persistent daemon
 atp send ./dataset host:8472 --dry-run                 # plan JSON, sends nothing
 ```
+
+## Multi-Donor Pull (bonding — N machines feed one receiver)
+
+Donors holding a **byte-identical** copy each spray a residue-disjoint slice
+of the same RaptorQ fountain; any K symbols from any mix reconstruct each
+block, a dead donor's repair windows are reallocated to the survivors, and
+goodput scales with donor count. Enrollment assigns each donor its
+index/slice server-side; commit stays fail-closed sha+merkle.
+
+```bash
+# One command on the receiving machine (donors need atp on PATH via ssh):
+atp bond-pull /data/big.tar ./inbox --donors ubuntu@h1,ubuntu@h2,ubuntu@h3 \
+  --advertise 10.0.0.5:8473        # control address donors dial — explicit,
+                                   # never inferred; wildcard fails closed
+
+# Or run the legs yourself:
+atp bond-recv ./inbox /local/byte-identical-copy --expect-donors 2 --listen 0.0.0.0:8473
+atp bond-donate /data/big.tar --to receiver:8473     # on each donor
+```
+
+`bond-recv` standalone needs a local byte-identical SOURCE to derive the
+transfer descriptor (the protocol never transmits it; enrollment fail-closes
+on any transfer-id/merkle/metadata mismatch). `bond-pull` removes that need
+by fetching the descriptor from the first donor over ssh. Descriptors commit
+the portable content shape, so fleet replicas with different mtimes/OSes
+still agree. Report adds `enrolled_donors`, per-donor `donor_ingress`, and
+`reallocated_repair_windows`.
 
 ## Exit Codes & Report
 

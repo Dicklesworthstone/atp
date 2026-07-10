@@ -74,12 +74,19 @@ window scheduling, per-symbol auth verdicts, `MAX_BONDING_DONORS`),
 `receiver` (`BondedReceiverSymbolSet`, bounded `BondedReceiverRetentionPolicy`,
 per-donor ingress stats, feedback plans, `ATP_BOND_TRACE`).
 
-**Status honesty**: the type system, scheduling, handshake, and bounded
-receiver are real and tested; the end-to-end data path and the CLI surface
-(`atp bond-recv` / `bond-donate` / `bond-pull` orchestrator) are in active
-development upstream (epic z01bbr, phases C/F). Do not claim or invent CLI
-bonding flags — check `atp --help` for `bond-` subcommands; when they exist,
-this section and the boundary card need updating.
+Library entry points (`transport_rq::bonded`): `receive_bonded(cx,
+&BondTransferDescriptor, dest_dir, &TcpListener, udp_bind_ip,
+expected_donors, RqConfig, peer_id) -> BondedReceiveReport` and
+`donate_bonded(cx, &descriptor, control_addr, source_root, RqConfig)` —
+enrollment over ATP control frames, symbols over UDP, fail-closed commit,
+donor-death repair-window reallocation.
+
+**Status**: end-to-end real — the CLI trio (`bond-donate` / `bond-recv` /
+`bond-pull`) ships in binaries after v0.3.7 (see CLI.md § Bonding trio);
+proven with a two-donor, three-process loopback transfer (disjoint residue
+slices, zero duplicates, byte-identical commit). Still open upstream: the
+SDK builder (z01bbr.6.4) and Phase-D transport-selection dialing for
+bond-pull (tailscale/relay).
 
 ## Choosing CLI vs library
 

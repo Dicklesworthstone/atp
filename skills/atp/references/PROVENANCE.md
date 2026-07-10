@@ -28,6 +28,9 @@ When source and skill disagree, source wins; file a bead.
 | Bounded feedback rounds, `NeedMore` trace fields | `ATP_RQ_TRACE` output paths in `transport_quic`/`transport_rq` |
 | Release-build requirement | README Troubleshooting; bench spec ("release atp build required") |
 
+| Bonding data plane: donor leg (`donate_path`), receive loop (`receive_bonded`/`donate_bonded`), CLI trio | asupersync `f5202521e` (bond-donate), `0cefc9f3a` (receive loop, 8 new tests incl. donor-death reallocation), `ebb21e29b` (trio + e2e `bond_cli_two_donor_loopback_commits`); beads z01bbr.6/.6.1–.6.3 closed 2026-07-10 |
+| Server-side donor enrollment (no index flags), descriptor-never-transmitted, portable content-shape descriptors | `transport_rq/bonded.rs` protocol + `bond-pull` `__bond-descriptor` fetch; enrollment-mismatch tests |
+
 ## Skill authorship
 
 Distilled 2026-07-10 by SapphireHill from: three working sessions inside the

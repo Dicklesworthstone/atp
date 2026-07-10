@@ -41,6 +41,33 @@ then streams directly; needs `atp` on the remote PATH).
 | `--rq-auth-key-hex HEX` | must match the sender's key |
 | `--max-bytes / --workers / --symbol-size / --max-block-size / --repair-overhead` | as on the sender; explicit values must match. Defaults agree automatically |
 
+## Bonding trio (binaries after v0.3.7)
+
+**`atp bond-donate <SOURCE> --to <HOST:PORT>`** — one donor leg. `--to` is the
+receiver's TCP **control** address; enrollment assigns donor index/count and
+UDP endpoints server-side (there are no index flags — client-claimed identity
+would be a facade). Serves NeedMore feedback until the commit receipt and
+exits nonzero unless the receiver committed. Takes the usual rq params
+(`--symbol-size --max-block-size --repair-overhead --max-bytes --workers`)
+plus `--rq-auth-key-hex`/`ATP_RQ_AUTH_KEY_HEX` or the lab flag.
+
+**`atp bond-recv <DEST> <SOURCE> --expect-donors N [--listen 0.0.0.0:8473]
+[--udp-bind IP] [--peer-id] [--accept-timeout-secs] [rq/auth params]`** —
+bonded receiver. `<SOURCE>` is a local byte-identical copy used only to
+derive the descriptor (never transmitted; enrollment fail-closes on
+transfer-id/merkle/metadata-commitment mismatch). Report adds
+`enrolled_donors`, per-donor `donor_ingress`, `reallocated_repair_windows`.
+
+**`atp bond-pull <SRC-ON-DONORS> <DEST> --donors u@h1,u@h2,…
+[--advertise IP:PORT] [--listen] [--udp-bind] [--remote-atp]
+[--remote-shell auto|posix|powershell] [--ssh-option]*
+[--descriptor-timeout-secs] [rq/auth params]`** — the orchestrator: fetches
+the descriptor from the first donor over ssh, runs the receiver in-process,
+ssh-launches one `bond-donate` per host (key exported via
+`ATP_RQ_AUTH_KEY_HEX`; per-transfer keygen when omitted). The control
+address donors dial is **explicit** (`--advertise`, or a routable
+`--listen`); a wildcard with no advertise fails closed.
+
 ## atp rq-keygen
 
 Prints a fresh 32-byte hex key. Distribute via your secrets manager; pass as
