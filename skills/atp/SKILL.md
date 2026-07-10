@@ -11,7 +11,18 @@ dependencies:
 
 # atp — fountain-coded file transfer
 
-<!-- TOC: One Rule | Boundary Card | Choose a Transport | Canonical Invocations | JSON Report | Gotchas | Failure→Fix | References -->
+<!-- TOC: Dispatch | One Rule | Boundary Card | Choose a Transport | Canonical Invocations | Exit Codes & Report | Gotchas | Failure→Fix | Anti-Patterns | Reference Index -->
+
+## Dispatch (start here)
+
+| You need to… | Do |
+|--------------|----|
+| Verify atp works in this environment | `scripts/smoke.sh` (real loopback transfer, exit 0 = healthy) |
+| Send/receive a file or tree | Canonical Invocations below — pick the row from Choose a Transport first |
+| Judge whether a transfer succeeded | exit code 0, or pipe the report into `scripts/check-report.sh` |
+| Decode an error message | Failure→Fix table, then [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
+| Look up a flag's exact semantics | [CLI.md](references/CLI.md) |
+| Set up keys/certs, tune a lossy link, benchmark | [OPERATIONS.md](references/OPERATIONS.md) |
 
 ## One Rule
 
@@ -64,9 +75,14 @@ atp serve ./inbox --transport rq --rq-auth-key-hex "$KEY"   # persistent daemon
 atp send ./dataset host:8472 --dry-run                 # plan JSON, sends nothing
 ```
 
-## Read the JSON Report
+## Exit Codes & Report
 
-Every transfer prints one. Check in this order:
+Contract (from `main()`): **exit 0 ⇒ the transfer committed and verified;
+exit 1 ⇒ failed closed** with `atp failed: <reason>` on stderr. The JSON
+report is on **stdout**, diagnostics on **stderr** — capture them separately
+(`atp send … > report.json 2> diag.log`). Never parse stderr.
+
+Reading the report — check in this order:
 
 1. `committed` — false means nothing was written to the destination.
 2. `sha_ok` / `merkle_ok` — the integrity verdict (fail-closed; a false here
@@ -104,6 +120,21 @@ Every transfer prints one. Check in this order:
 | Connect/handshake timeout ~30–60 s | wrong port, UDP blocked, or another process on the socket pair | verify reachability; check the sidecar port too |
 
 More: [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md)
+
+## Anti-Patterns
+
+- **Don't "fix" an auth error with `--rq-allow-unauthenticated-lab`** on a
+  real link — it disables symbol auth on both ends. Generate a key instead.
+- **Don't look for a QUIC skip-verify flag.** There isn't one; fix the cert
+  chain / `--server-name` instead.
+- **Don't benchmark or bisect with a debug build** — RaptorQ decode is
+  orders-of-magnitude slower; every conclusion will be wrong.
+- **Don't set `--symbol-size` on one end only.** Omit it everywhere (defaults
+  agree) or set it identically on both.
+- **Don't compare against lazy rsync.** Claims are only valid vs
+  `-aW --inplace --no-compress` (+ `aes128-gcm` over ssh) — see OPERATIONS.md.
+- **Don't retry a failed transfer blind.** Read `atp failed: <reason>` on
+  stderr first — fail-closed errors state the exact fix.
 
 ## Reference Index
 
