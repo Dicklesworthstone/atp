@@ -83,13 +83,31 @@ else
     echo "pinned upstream commit $REV is not contained in origin/main" >&2
     exit 1
   fi
+
+  # Hermetic pinned builds: user-level cargo config (e.g. [patch] entries in
+  # ~/.cargo/config.toml on a build host) can mutate the crate graph and break
+  # --locked. Point CARGO_HOME at a dedicated directory that carries no user
+  # config but persists across builds so the registry cache is reused.
+  export CARGO_HOME="${ATP_BUILD_CARGO_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/atp-build-cargo-home}"
+  mkdir -p "$CARGO_HOME"
+  echo "==> hermetic CARGO_HOME: $CARGO_HOME"
 fi
 
 BUILD_ARGS=(build --release --locked --bin atp --features atp-cli)
-BIN_SUBPATH="release/atp"
+HOST_TARGET="$(cd "$SRC" && rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+if [ -z "$HOST_TARGET" ]; then
+  echo "could not determine the active Rust host target" >&2
+  exit 1
+fi
+BUILT_TARGET="${TARGET:-$HOST_TARGET}"
+BIN_NAME="atp"
+if [[ "$BUILT_TARGET" == *-windows-* ]]; then
+  BIN_NAME="atp.exe"
+fi
+BIN_SUBPATH="release/$BIN_NAME"
 if [ -n "$TARGET" ]; then
   BUILD_ARGS+=(--target "$TARGET")
-  BIN_SUBPATH="$TARGET/release/atp"
+  BIN_SUBPATH="$TARGET/release/$BIN_NAME"
   # Run inside the source tree so the target lands on the toolchain pinned by
   # its rust-toolchain.toml, not whatever toolchain is active in this repo.
   (cd "$SRC" && rustup target add "$TARGET")
@@ -99,16 +117,18 @@ echo "==> cargo ${BUILD_ARGS[*]}"
 (cd "$SRC" && cargo "${BUILD_ARGS[@]}")
 
 mkdir -p "$OUT_DIR"
-FINAL_BIN="$OUT_DIR/atp"
+FINAL_BIN="$OUT_DIR/$BIN_NAME"
 if [ -d "$FINAL_BIN" ]; then
   echo "output path is a directory: $FINAL_BIN" >&2
   exit 1
 fi
-STAGED_BIN="$(mktemp "$OUT_DIR/.atp-build.XXXXXX")"
+STAGE_TEMPLATE="$OUT_DIR/.atp-build.XXXXXX"
+if [ "$BIN_NAME" = "atp.exe" ]; then
+  STAGE_TEMPLATE="$STAGE_TEMPLATE.exe"
+fi
+STAGED_BIN="$(mktemp "$STAGE_TEMPLATE")"
 install -m 0755 "$SRC/target/$BIN_SUBPATH" "$STAGED_BIN"
 
-HOST_TARGET="$(cd "$SRC" && rustc -vV | sed -n 's/^host: //p')"
-BUILT_TARGET="${TARGET:-$HOST_TARGET}"
 if [ "$BUILT_TARGET" = "$HOST_TARGET" ]; then
   "$STAGED_BIN" --version
 else

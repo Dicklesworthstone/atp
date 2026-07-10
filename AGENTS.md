@@ -49,13 +49,21 @@ asupersync `main`, then bump `UPSTREAM_REV` here.
 
 ---
 
-## Release Process
+## Release Process — dsr ONLY (GitHub Actions is DISABLED)
 
-Releases publish prebuilt `atp` binaries for Linux (x86_64 and aarch64, each as
-musl + gnu) and macOS (x86_64, aarch64) — six tarballs — plus `SHA256SUMS` and
-GitHub build-provenance attestations.
+**USER DIRECTIVE (2026-07-10): GitHub Actions must not be used for ANYTHING in
+this repo.** Both workflows are `disabled_manually` via `gh workflow disable`;
+the YAML files remain in-tree as reference build recipes only. Never re-enable
+them. Releases are built and published with
+[dsr](https://github.com/Dicklesworthstone/doodlestein_self_releaser) from the
+config in `~/.config/dsr/repos.d/atp.yaml`, which builds from the `UPSTREAM_REV`
+pin via `scripts/build-atp.sh --pinned` (never from the shared asupersync
+working tree).
 
 ```bash
+# 0. One-time sanity
+dsr doctor && dsr health all && dsr repos validate
+
 # 1. Pick the asupersync commit to ship (must be pushed to origin/main there)
 git -C upstream fetch origin main
 git -C upstream rev-parse origin/main        # -> the new pin
@@ -66,17 +74,19 @@ git add UPSTREAM_REV && git commit -m "chore: bump upstream pin to <sha-short>"
 git push
 
 # 3. Tag and push (version = the `atp --version` the pinned rev reports,
-#    i.e. asupersync's Cargo.toml package version)
+#    i.e. asupersync's Cargo.toml package version). Pushing the tag triggers
+#    nothing (Actions disabled) — it just pins the release commit.
 git tag vX.Y.Z && git push origin vX.Y.Z
 
-# 4. Watch the release build (non-interactive: list, then watch by id)
-gh run list --repo Dicklesworthstone/atp --limit 3
-gh run watch <run-id> --repo Dicklesworthstone/atp --exit-status
+# 4. Build all targets (linux/amd64 locally, darwin/arm64 on mmini) and publish
+dsr build atp -V vX.Y.Z --parallel
+dsr release atp vX.Y.Z
+dsr release verify atp vX.Y.Z
 ```
 
 Notes:
 
-- The workflow checks out asupersync at `UPSTREAM_REV` and runs
+- dsr builds run `scripts/build-atp.sh --pinned`, i.e.
   `cargo build --release --locked --bin atp --features atp-cli`
   (plus `--target <triple>` per matrix leg) under the nightly toolchain pinned
   by asupersync's `rust-toolchain.toml`.
