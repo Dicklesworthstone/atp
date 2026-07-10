@@ -12,6 +12,7 @@ set -u
 INSTALL_URL="https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
 
+# Reads ~/.ssh/config only (Include directives are not followed).
 list_hosts() {
   awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) if ($i !~ /[*?!]/) print $i}' \
     ~/.ssh/config 2>/dev/null | sort -u
@@ -19,10 +20,14 @@ list_hosts() {
 
 case "${1:-}" in
   --list) list_hosts; exit 0 ;;
-  --all) mapfile -t HOSTS < <(list_hosts) ;;
+  --all)
+    HOSTS=()
+    while IFS= read -r h; do HOSTS+=("$h"); done < <(list_hosts)  # macOS bash 3.2 has no mapfile
+    ;;
   "") echo "usage: fleet-install.sh --list | --all | HOST…" >&2; exit 2 ;;
   *) HOSTS=("$@") ;;
 esac
+[ "${#HOSTS[@]}" -gt 0 ] || { echo "no eligible hosts found" >&2; exit 2; }
 
 FAILED=0
 for h in "${HOSTS[@]}"; do
@@ -36,8 +41,7 @@ for h in "${HOSTS[@]}"; do
   esac
   if out=$(ssh "${SSH_OPTS[@]}" "$h" \
       "curl -fsSL '$INSTALL_URL' | bash -s -- --quiet --no-skill && \
-       (command -v atp || echo \"\$HOME/.local/bin/atp\") >/dev/null; \
-       \"\$HOME/.local/bin/atp\" --version 2>/dev/null || atp --version 2>/dev/null" 2>&1); then
+       { \"\$HOME/.local/bin/atp\" --version 2>/dev/null || atp --version 2>/dev/null; }" 2>&1); then
     ver=$(printf '%s\n' "$out" | grep -m1 '^atp ' || echo 'installed (version unread)')
     printf '%s\tOK\t%s\n' "$h" "$ver"
   else

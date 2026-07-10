@@ -11,7 +11,7 @@ dependencies:
 
 # atp — fountain-coded file transfer
 
-<!-- TOC: Dispatch | One Rule | Transport Policy | Peer Profiles | Boundary Card | Choose a Transport | Canonical Invocations | Exit Codes & Report | Gotchas | Failure→Fix | Anti-Patterns | Reference Index -->
+<!-- TOC: Dispatch | One Rule | Transport Policy | Peer Profiles | Update/Install | Boundary Card | Choose a Transport | Canonical Invocations | Exit Codes & Report | Gotchas | Failure→Fix | Anti-Patterns | Reference Index -->
 
 ## Dispatch (start here)
 
