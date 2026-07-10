@@ -64,7 +64,7 @@ if [ "$PINNED" -eq 0 ] && [ -d "$REPO_ROOT/upstream/.git" ]; then
   SRC="$REPO_ROOT/upstream"
   echo "==> building from local upstream checkout: $SRC"
   echo "    (working-tree state, not necessarily UPSTREAM_REV $REV;"
-  echo "     use --pinned for a release-identical build)"
+  echo "     use --pinned to build the same pinned source snapshot)"
 else
   CLEANUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atp-upstream.XXXXXX")"
   SRC="$CLEANUP_DIR/asupersync"
@@ -99,16 +99,39 @@ echo "==> cargo ${BUILD_ARGS[*]}"
 (cd "$SRC" && cargo "${BUILD_ARGS[@]}")
 
 mkdir -p "$OUT_DIR"
+FINAL_BIN="$OUT_DIR/atp"
+if [ -d "$FINAL_BIN" ]; then
+  echo "output path is a directory: $FINAL_BIN" >&2
+  exit 1
+fi
 STAGED_BIN="$(mktemp "$OUT_DIR/.atp-build.XXXXXX")"
 install -m 0755 "$SRC/target/$BIN_SUBPATH" "$STAGED_BIN"
-mv -f "$STAGED_BIN" "$OUT_DIR/atp"
-STAGED_BIN=""
-echo "==> built: $OUT_DIR/atp"
 
 HOST_TARGET="$(cd "$SRC" && rustc -vV | sed -n 's/^host: //p')"
 BUILT_TARGET="${TARGET:-$HOST_TARGET}"
 if [ "$BUILT_TARGET" = "$HOST_TARGET" ]; then
-  "$OUT_DIR/atp" --version
+  "$STAGED_BIN" --version
 else
   echo "==> foreign target $BUILT_TARGET built successfully; runtime smoke test skipped on $HOST_TARGET"
 fi
+
+# Recheck after the build and smoke test so an existing binary is preserved on
+# every failure, including a concurrent directory appearing at the destination.
+if [ -d "$FINAL_BIN" ]; then
+  echo "output path became a directory: $FINAL_BIN" >&2
+  exit 1
+fi
+STAGED_NAME="${STAGED_BIN##*/}"
+mv -f "$STAGED_BIN" "$FINAL_BIN"
+# POSIX `mv source existing-directory` succeeds by moving the source inside the
+# directory. Detect that destination race and remove the misplaced staged file
+# instead of reporting a build that did not install `atp`.
+if [ -d "$FINAL_BIN" ]; then
+  if [ -e "$FINAL_BIN/$STAGED_NAME" ] || [ -L "$FINAL_BIN/$STAGED_NAME" ]; then
+    rm -f "$FINAL_BIN/$STAGED_NAME"
+  fi
+  echo "output path became a directory during install: $FINAL_BIN" >&2
+  exit 1
+fi
+STAGED_BIN=""
+echo "==> built: $FINAL_BIN"

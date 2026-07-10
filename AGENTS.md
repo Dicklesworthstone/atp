@@ -98,7 +98,8 @@ Notes:
 ```bash
 bash -n install.sh                       # syntax
 shellcheck -S warning install.sh         # lint
-bash scripts/test-install.sh             # deterministic local installer contracts
+bash scripts/test-install.sh             # deterministic installer contracts
+bash scripts/test-build-atp.sh           # deterministic pinned-build contracts
 bash install.sh --no-gum --dest /tmp/atp-test-bin --verify   # real install
 bash install.sh --quiet --dest /tmp/atp-test-bin --force     # quiet path
 ```

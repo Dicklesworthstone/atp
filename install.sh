@@ -479,6 +479,15 @@ is_sha256() {
   esac
 }
 
+is_commit_sha() {
+  local value="$1"
+  [ "${#value}" -eq 40 ] || return 1
+  case "$value" in
+    *[!0-9A-Fa-f]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 verify_checksum() {
   local file="$1"
 
@@ -772,6 +781,10 @@ resolve_upstream_rev() {
   fi
   if [ -z "$UPSTREAM_REV" ]; then
     err "Could not resolve the pinned asupersync revision (UPSTREAM_REV)"
+    exit 1
+  fi
+  if ! is_commit_sha "$UPSTREAM_REV"; then
+    err "Pinned asupersync revision must be one 40-hex commit ID"
     exit 1
   fi
 }

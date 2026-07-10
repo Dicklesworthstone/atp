@@ -56,7 +56,7 @@ explicit loss hint today.
 | **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed — a failed transfer never leaves partially-written garbage in the destination |
 | **Fast on clean links too** | Adaptive path: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
 | **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 2.9–4.8× faster than rsync across all four link regimes |
-| **Explicit security tiers** | From lab plaintext to per-symbol HMAC to full QUIC TLS 1.3 with fail-closed certificate verification. Direct transports are explicit; `auto --no-delta` is a best-effort availability ladder and may select a weaker tier |
+| **Explicit security tiers** | Plain TCP is the unauthenticated default; raw UDP can use lab plaintext or per-symbol HMAC; QUIC provides TLS 1.3 with fail-closed certificate verification. `auto --no-delta` is a best-effort availability ladder and may select a weaker tier |
 | **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed — and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
 | **1-RTT startup** | QUIC handshake instead of ssh session setup: encrypted 500 KB transfers are **3–5× faster** than rsync-over-ssh |
 
@@ -134,7 +134,7 @@ Measured 2026-07-08/09 (atp 0.3.5 release build), all displayed cells SHA-verifi
 | 50 MB file | **0.45** (2.2×) | **0.72** (1.4×) | **0.71** (1.4×) | **0.83** (1.2×) |
 | 500 MB file | **0.88** (4.52 s vs 5.13 s) | — | **0.98** (parity) | **0.93** (converges 3/3) |
 | 5 GB file | **0.99** (46.0 s vs 46.6 s) | — | — | — |
-| tree (2,000 files) | 1.09 (loss, noisy) | **0.95** | **0.79** | **0.68** |
+| tree (2,000 files) | 1.09 (loss, noisy) | **0.95** | **0.79** | **0.68** (4/5) |
 | tree (400 files, large) | **0.60** (1.7×) | **0.67** (1.5×) | **0.62** (1.6×) | **0.41** (2.5×) |
 
 Per-regime geometric means over the available cells above: **perfect 0.61 · good
@@ -143,6 +143,9 @@ not directly comparable across regimes because the workload sets differ: good ha
 four measured workloads while perfect has six. Across the displayed valid cells,
 atp is roughly 1.6× faster than tuned rsync; this is a selected-board summary, not a
 claim that all 28 specification cells passed.
+
+The broken-link 2,000-file tree cell completed 4 of 5 atp repetitions. The ratio
+uses the successful runs; the excluded failure was a recorded route-setup error.
 
 The headline cell: **500 MB over a 10%-loss, 200 ms, 10 Mbit link**. When first won
 (ledger MATRIX-209), atp posted **564.8 s vs rsync's 574.5 s** with atp's *worst*
@@ -299,13 +302,14 @@ hidden directory is expected, and safe to delete if you never re-sync.
 
 ## Security Model
 
-Three direct tiers are explicit. The `auto --no-delta` availability ladder is the
-exception: it tries QUIC, then RQ, then plaintext TCP, including after certificate
-or authentication failures. Use an explicit transport whenever a minimum security
-tier matters.
+Plain TCP is the unauthenticated default. Direct RQ and QUIC modes are explicit.
+The `auto --no-delta` availability ladder tries QUIC, then RQ, then plaintext TCP,
+including after certificate or authentication failures. Use an explicit transport
+whenever a minimum security tier matters.
 
 | Tier | Flags | What you get |
 |------|-------|--------------|
+| **Plain TCP** | `--transport tcp` (default) | No transport authentication or encryption. Use only on trusted links or inside an authenticated tunnel |
 | **Lab / plaintext** | `--rq-allow-unauthenticated-lab` (both ends) | No crypto. For benchmarks, airgapped labs, and trusted links only. The flag name is deliberately embarrassing to type in production |
 | **Symbol-authenticated** | `--rq-auth-key-hex <64-hex>` (both ends, or env `ATP_RQ_AUTH_KEY_HEX`) | Per-symbol HMAC on every UDP symbol. Forged symbol payloads are rejected before decode, but the TCP control stream/manifest is not authenticated and signed symbols are not session-bound or replay-protected. Generate keys with `atp rq-keygen` |
 | **Encrypted** | `--transport quic` + receiver `--server-cert/--server-key`, sender `--ca/--server-name` | Full TLS 1.3 with real X.509 verification (chain, hostname, signature — fail-closed, no `--insecure` escape hatch); every packet, symbols included, is authenticated and encrypted by the QUIC 1-RTT AEAD |
@@ -333,7 +337,7 @@ Details that matter (from the
   it with `--no-delta`, or firewall it to trusted senders.
 - Honest boundaries: the encrypted tier's data plane uses an asupersync-specific
   short header (it is not generic-QUIC wire-interoperable), and the plain TCP
-  transport authenticates content against the manifest but has no per-symbol auth.
+  transport verifies content against the received manifest but has no per-symbol auth.
   The full threat model documents exactly what is and is not claimed.
 
 ---
@@ -372,9 +376,9 @@ before publishing. Older releases may have a smaller platform set:
 | Platform | Artifact |
 |----------|----------|
 | Linux x86_64 (static, any glibc) | `atp-x86_64-unknown-linux-musl.tar.gz` |
-| Linux x86_64 (glibc) | `atp-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86_64 (glibc 2.39+) | `atp-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux aarch64 (static, any glibc) | `atp-aarch64-unknown-linux-musl.tar.gz` |
-| Linux aarch64 (glibc) | `atp-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 (glibc 2.39+) | `atp-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon | `atp-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `atp-x86_64-apple-darwin.tar.gz` |
 
@@ -390,7 +394,7 @@ its standalone transfer CLI). The tree pins its own nightly toolchain via
 cargo install --git https://github.com/Dicklesworthstone/asupersync asupersync \
   --bin atp --features atp-cli
 
-# Or a release-identical build at this repo's pinned upstream commit
+# Or build the same pinned source snapshot used by this repository
 git clone https://github.com/Dicklesworthstone/atp && cd atp
 scripts/build-atp.sh --pinned          # → dist/atp
 ```

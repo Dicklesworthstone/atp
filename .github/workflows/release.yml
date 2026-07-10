@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.3.5). Created at current main if missing.'
+        description: 'Existing stable release tag (e.g. v0.3.8).'
         required: true
         type: string
 
@@ -20,9 +20,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Key on the resolved version so a tag push and a manual dispatch of the same
-  # version serialize instead of racing to publish the same release.
-  group: release-${{ inputs.tag || github.ref_name }}
+  # Serialize every publication. Different version tags must not race when
+  # deciding which stable release is newest.
+  group: release-publish
   cancel-in-progress: false
 
 env:
@@ -38,6 +38,7 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_sha: ${{ steps.release.outputs.release_sha }}
       upstream_rev: ${{ steps.release.outputs.upstream_rev }}
+      existing_draft_id: ${{ steps.release.outputs.existing_draft_id }}
     steps:
       - name: Checkout release controller
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -59,8 +60,8 @@ jobs:
           else
             tag="$REF_NAME"
           fi
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: $tag" >&2
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid stable release tag: $tag (prereleases are not supported)" >&2
             exit 1
           fi
 
@@ -71,21 +72,64 @@ jobs:
               echo "Tag-push event did not resolve refs/tags/$tag" >&2
               exit 1
             fi
+            event_commit="$(git rev-parse "$EVENT_SHA^{commit}")"
+            if [ "$existing_sha" != "$event_commit" ]; then
+              echo "Tag $tag moved after the push event: event=$event_commit current=$existing_sha" >&2
+              exit 1
+            fi
             release_sha="$existing_sha"
           elif [ -n "$existing_sha" ]; then
             release_sha="$existing_sha"
           else
-            if [ "$REF_NAME" != "main" ]; then
-              echo "A new release tag may only be created from main (got $REF_NAME)" >&2
-              exit 1
-            fi
-            release_sha="$EVENT_SHA"
-          fi
-
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists; refusing to replace immutable assets" >&2
+            echo "Release tag $tag does not exist; create and push the immutable tag first" >&2
             exit 1
           fi
+
+          git fetch --quiet --filter=blob:none origin main
+          if ! git merge-base --is-ancestor "$release_sha" origin/main; then
+            echo "Release commit $release_sha is not contained in origin/main" >&2
+            exit 1
+          fi
+
+          latest_stable="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          if [ "$tag" != "$latest_stable" ]; then
+            echo "Release tag $tag is not the newest stable tag ($latest_stable); refusing a backfill that could replace latest" >&2
+            exit 1
+          fi
+
+          release_api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$tag"
+          if ! release_status="$(curl -sS -o "$RUNNER_TEMP/release-lookup.json" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$release_api")"; then
+            echo "Could not determine whether release $tag already exists" >&2
+            exit 1
+          fi
+          existing_draft_id=''
+          case "$release_status" in
+            200)
+              existing_tag="$(jq -r '.tag_name' "$RUNNER_TEMP/release-lookup.json")"
+              existing_draft="$(jq -r '.draft' "$RUNNER_TEMP/release-lookup.json")"
+              if [ "$existing_tag" != "$tag" ] || [ "$existing_draft" != "true" ]; then
+                echo "Published release $tag already exists; refusing to replace immutable assets" >&2
+                exit 1
+              fi
+              existing_draft_id="$(jq -r '.id' "$RUNNER_TEMP/release-lookup.json")"
+              if [[ ! "$existing_draft_id" =~ ^[0-9]+$ ]]; then
+                echo "Existing draft for $tag has an invalid release ID" >&2
+                exit 1
+              fi
+              echo "Release $tag has resumable draft $existing_draft_id; it will be replaced after successful builds"
+              ;;
+            404) ;;
+            *)
+              echo "Release lookup for $tag failed with HTTP $release_status" >&2
+              cat "$RUNNER_TEMP/release-lookup.json" >&2
+              exit 1
+              ;;
+          esac
 
           upstream_rev="$(git show "$release_sha:UPSTREAM_REV" | tr -d '[:space:]')"
           if [[ ! "$upstream_rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -97,11 +141,44 @@ jobs:
             echo "release_tag=$tag"
             echo "release_sha=$release_sha"
             echo "upstream_rev=$upstream_rev"
+            echo "existing_draft_id=$existing_draft_id"
           } >> "$GITHUB_OUTPUT"
+
+  contracts:
+    name: Distribution contracts (${{ matrix.os }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Install shellcheck on macOS
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
+      - name: Validate distribution scripts
+        run: |
+          bash -n install.sh scripts/build-atp.sh scripts/test-install.sh scripts/test-build-atp.sh
+          shellcheck -S warning install.sh scripts/build-atp.sh scripts/test-install.sh scripts/test-build-atp.sh
+          bash scripts/test-install.sh
+          bash scripts/test-build-atp.sh
+
+      - name: Validate workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml
 
   build:
     name: Build ${{ matrix.target }}
-    needs: prepare
+    needs: [prepare, contracts]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     strategy:
@@ -255,7 +332,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [prepare, build]
+    needs: [prepare, contracts, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -309,27 +386,96 @@ jobs:
             dist/*.tar.gz
             dist/SHA256SUMS
 
-      - name: Create release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.release_tag }}
-          target_commitish: ${{ needs.prepare.outputs.release_sha }}
-          name: atp ${{ needs.prepare.outputs.release_tag }}
-          overwrite_files: false
-          fail_on_unmatched_files: true
-          make_latest: true
-          body: |
-            Standalone `atp` CLI binaries, built from the canonical
-            [asupersync](https://github.com/Dicklesworthstone/asupersync) source at commit
-            [`${{ needs.prepare.outputs.upstream_rev }}`](https://github.com/Dicklesworthstone/asupersync/commit/${{ needs.prepare.outputs.upstream_rev }}).
+      - name: Create verified draft, upload exact assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          UPSTREAM_REV: ${{ needs.prepare.outputs.upstream_rev }}
+          EXISTING_DRAFT_ID: ${{ needs.prepare.outputs.existing_draft_id }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          Standalone \`atp\` CLI binaries, built from the canonical
+          [asupersync](https://github.com/Dicklesworthstone/asupersync) source at commit
+          [\`$UPSTREAM_REV\`](https://github.com/Dicklesworthstone/asupersync/commit/$UPSTREAM_REV).
 
-            Verify downloads against `SHA256SUMS`, or verify the GitHub build
-            provenance with `gh attestation verify <asset> --repo Dicklesworthstone/atp`.
-            Install with:
+          Verify downloads against \`SHA256SUMS\`, or verify the GitHub build
+          provenance with \`gh attestation verify <asset> --repo Dicklesworthstone/atp\`.
+          Install this release with:
 
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
-            ```
-          files: |
-            dist/atp-*.tar.gz
-            dist/SHA256SUMS
+          \`\`\`bash
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$RELEASE_TAG/install.sh" | \
+            bash -s -- --version "$RELEASE_TAG"
+          \`\`\`
+          EOF
+
+          if [ -n "$EXISTING_DRAFT_ID" ]; then
+            existing_draft="$RUNNER_TEMP/existing-draft.json"
+            gh api "repos/$GITHUB_REPOSITORY/releases/$EXISTING_DRAFT_ID" > "$existing_draft"
+            if [ "$(jq -r '.id' "$existing_draft")" != "$EXISTING_DRAFT_ID" ] || \
+               [ "$(jq -r '.tag_name' "$existing_draft")" != "$RELEASE_TAG" ] || \
+               [ "$(jq -r '.draft' "$existing_draft")" != "true" ]; then
+              echo "Existing release $EXISTING_DRAFT_ID is no longer the expected draft for $RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$EXISTING_DRAFT_ID"
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --target "$RELEASE_SHA" \
+            --title "atp $RELEASE_TAG" \
+            --notes-file "$notes"
+
+          draft_json="$RUNNER_TEMP/created-draft.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$draft_json"
+          draft_id="$(jq -r '.id' "$draft_json")"
+          if [[ ! "$draft_id" =~ ^[0-9]+$ ]] || \
+             [ "$(jq -r '.tag_name' "$draft_json")" != "$RELEASE_TAG" ] || \
+             [ "$(jq -r '.draft' "$draft_json")" != "true" ]; then
+            echo "Created release is not the expected draft for $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          release_published=0
+          cleanup_draft() {
+            status=$?
+            trap - EXIT
+            if [ "$release_published" -eq 0 ] && [ -n "${draft_id:-}" ]; then
+              current="$RUNNER_TEMP/cleanup-draft.json"
+              if gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" > "$current" 2>/dev/null && \
+                 [ "$(jq -r '.draft' "$current")" = "true" ] && \
+                 [ "$(jq -r '.tag_name' "$current")" = "$RELEASE_TAG" ]; then
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id" || \
+                  echo "Could not clean draft $draft_id; the next run will replace it" >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap cleanup_draft EXIT
+
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            dist/atp-*.tar.gz dist/SHA256SUMS
+
+          expected='["SHA256SUMS","atp-aarch64-apple-darwin.tar.gz","atp-aarch64-unknown-linux-gnu.tar.gz","atp-aarch64-unknown-linux-musl.tar.gz","atp-x86_64-apple-darwin.tar.gz","atp-x86_64-unknown-linux-gnu.tar.gz","atp-x86_64-unknown-linux-musl.tar.gz"]'
+          actual="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,assets \
+            --jq '[.isDraft, ([.assets[].name] | sort)]')"
+          if [ "$actual" != "[true,$expected]" ]; then
+            echo "Draft release asset verification failed: $actual" >&2
+            exit 1
+          fi
+
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest
+          release_published=1
+          published_state="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq '.isDraft')"
+          if [ "$published_state" != "false" ]; then
+            echo "Release $RELEASE_TAG was not published successfully" >&2
+            exit 1
+          fi
+          trap - EXIT
