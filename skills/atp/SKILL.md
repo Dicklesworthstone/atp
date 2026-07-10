@@ -27,6 +27,7 @@ dependencies:
 | Look up a flag's exact semantics | [CLI.md](references/CLI.md) |
 | Set up keys/certs, tune a lossy link, benchmark | [OPERATIONS.md](references/OPERATIONS.md) |
 | Embed transfer capability in a Rust project | [LIBRARY.md](references/LIBRARY.md) — atp is the `asupersync` crate's transfer subsystem |
+| Pull one file from MANY machines at once (multi-donor "bonding") | LIBRARY.md § Bonding — library-tier today; CLI (`atp bond-pull` etc.) is in active development upstream, do NOT invent flags for it |
 
 ## One Rule
 
@@ -100,6 +101,8 @@ becoming reachable is a natural moment to offer this.
   QUIC or they fail closed at startup.
 - `--rq-auth-key-hex` on `--transport quic` is ignored (QUIC's TLS 1.3 AEAD
   already authenticates datagrams); ≥0.3.7 prints a notice saying so.
+- Multi-donor bonding (N machines → one receiver, same file) is library-tier
+  only in v0.3.7 — no `bond-` CLI subcommands yet (in development upstream).
 - Honest losing cells (do not oversell): encrypted single huge files on
   pristine fast links (rsync-over-ssh ~1.5×, trees ~2.5×); sender RSS can
   peak ~10× rsync's on 2–10% loss links (receiver stays ≤ 18 MB).

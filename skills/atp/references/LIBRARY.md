@@ -57,6 +57,30 @@ worked example of wiring configs → transfers → reports.
 - Cancellation is a protocol (asupersync invariant): dropping/cancelling a
   transfer region drains cleanly; no partial files leak into DEST.
 
+## Bonding — multi-donor fountain (pull one object from N machines at once)
+
+`asupersync::net::atp::bonding`: every donor holding a byte-identical copy
+sprays a **residue-disjoint slice of the same RaptorQ fountain** (`esi` module
+partitions ESIs per donor), so any-K-symbols-from-any-mix reconstructs each
+block, loss on one donor is repaired by another, and aggregate goodput scales
+with donor count. The invariant everything rests on: donors and receiver
+prove agreement on the exact object (`BondTransferDescriptor` + merkle
+holding-proofs) so an `(sbn, esi)` pair means the same bytes everywhere.
+
+Key surface today: `descriptor` (shared transfer descriptor + donor proofs),
+`esi` (partition/disjointness), `assignment` (`DonorAssignment`, spray/repair
+window scheduling, per-symbol auth verdicts, `MAX_BONDING_DONORS`),
+`handshake` (versioned capability negotiation, `BondingReceiverControlPlane`),
+`receiver` (`BondedReceiverSymbolSet`, bounded `BondedReceiverRetentionPolicy`,
+per-donor ingress stats, feedback plans, `ATP_BOND_TRACE`).
+
+**Status honesty**: the type system, scheduling, handshake, and bounded
+receiver are real and tested; the end-to-end data path and the CLI surface
+(`atp bond-recv` / `bond-donate` / `bond-pull` orchestrator) are in active
+development upstream (epic z01bbr, phases C/F). Do not claim or invent CLI
+bonding flags — check `atp --help` for `bond-` subcommands; when they exist,
+this section and the boundary card need updating.
+
 ## Choosing CLI vs library
 
 Embed the library when transfers are part of your product's data plane
