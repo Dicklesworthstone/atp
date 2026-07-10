@@ -440,6 +440,26 @@ if grep -F 'sh.rustup.rs' "$LAST_NETWORK_LOG" >/dev/null 2>&1; then
 fi
 pass "download failure does not silently install rustup"
 
+WINDOWS_SHELL_BIN="$TEST_TMP/windows-shell-bin"
+mkdir -p "$WINDOWS_SHELL_BIN"
+cat > "$WINDOWS_SHELL_BIN/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  -s) printf '%s\n' MINGW64_NT-10.0 ;;
+  -m) printf '%s\n' x86_64 ;;
+  *) exec /usr/bin/uname "$@" ;;
+esac
+EOF
+chmod 0755 "$WINDOWS_SHELL_BIN/uname"
+RUN_PATH="$WINDOWS_SHELL_BIN:$NO_NETWORK_BIN:$ORIGINAL_PATH"
+dest="$TEST_TMP/dest-native-windows-shell"
+run_installer native-windows-shell --dest "$dest" --force
+expect_rc 2 "native Windows Bash entry point"
+assert_contains "Native Windows installs use install.ps1" "$LAST_OUTPUT"
+assert_not_exists "$dest/atp"
+assert_no_network
+pass "native Windows shells fail early with the PowerShell installer path"
+
 AARCH64_BIN="$TEST_TMP/aarch64-bin"
 mkdir -p "$AARCH64_BIN"
 cat > "$AARCH64_BIN/uname" <<'EOF'

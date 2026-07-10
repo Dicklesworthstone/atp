@@ -16,6 +16,8 @@
 #
 # Requires: git, rustup (the asupersync tree pins its own nightly toolchain via
 # rust-toolchain.toml, which rustup installs automatically on first build).
+# The x86_64-musl and both aarch64 Linux targets additionally require `cross`
+# (override its executable with ATP_CROSS_DRIVER when testing or provisioning).
 #
 set -euo pipefail
 
@@ -100,6 +102,12 @@ if [ -z "$HOST_TARGET" ]; then
   exit 1
 fi
 BUILT_TARGET="${TARGET:-$HOST_TARGET}"
+BUILD_DRIVER="cargo"
+case "$BUILT_TARGET" in
+  x86_64-unknown-linux-musl|aarch64-unknown-linux-gnu|aarch64-unknown-linux-musl)
+    BUILD_DRIVER="${ATP_CROSS_DRIVER:-cross}"
+    ;;
+esac
 BIN_NAME="atp"
 if [[ "$BUILT_TARGET" == *-windows-* ]]; then
   BIN_NAME="atp.exe"
@@ -108,13 +116,19 @@ BIN_SUBPATH="release/$BIN_NAME"
 if [ -n "$TARGET" ]; then
   BUILD_ARGS+=(--target "$TARGET")
   BIN_SUBPATH="$TARGET/release/$BIN_NAME"
-  # Run inside the source tree so the target lands on the toolchain pinned by
-  # its rust-toolchain.toml, not whatever toolchain is active in this repo.
-  (cd "$SRC" && rustup target add "$TARGET")
+  if [ "$BUILD_DRIVER" = "cargo" ]; then
+    # Run inside the source tree so the target lands on the toolchain pinned by
+    # its rust-toolchain.toml, not whatever toolchain is active in this repo.
+    (cd "$SRC" && rustup target add "$TARGET")
+  fi
 fi
 
-echo "==> cargo ${BUILD_ARGS[*]}"
-(cd "$SRC" && cargo "${BUILD_ARGS[@]}")
+if ! command -v "$BUILD_DRIVER" >/dev/null 2>&1; then
+  echo "required build driver not found for $BUILT_TARGET: $BUILD_DRIVER" >&2
+  exit 1
+fi
+echo "==> $BUILD_DRIVER ${BUILD_ARGS[*]}"
+(cd "$SRC" && "$BUILD_DRIVER" "${BUILD_ARGS[@]}")
 
 mkdir -p "$OUT_DIR"
 FINAL_BIN="$OUT_DIR/$BIN_NAME"

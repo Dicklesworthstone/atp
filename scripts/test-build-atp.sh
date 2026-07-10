@@ -47,6 +47,19 @@ assert_contains() {
   grep -F -- "$needle" "$file" >/dev/null 2>&1 || fail "missing '$needle' in $file"
 }
 
+assert_not_contains() {
+  local needle="$1"
+  local file="$2"
+  if grep -F -- "$needle" "$file" >/dev/null 2>&1; then
+    fail "unexpected '$needle' in $file"
+  fi
+}
+
+assert_empty_or_missing() {
+  local file="$1"
+  [ ! -s "$file" ] || fail "expected empty or missing file: $file"
+}
+
 assert_no_stage_files() {
   local out_dir="$1"
   if compgen -G "$out_dir/.atp-build.*" >/dev/null; then
@@ -104,7 +117,8 @@ case "$PWD" in
   "${FAKE_TEST_ROOT:?}"/*) : ;;
   *) printf 'fake cargo escaped test root: %s\n' "$PWD" >&2; exit 93 ;;
 esac
-printf '%s\n' "$*" >> "${FAKE_LOG_DIR:?}/cargo.log"
+driver=${0##*/}
+printf '%s\n' "$*" >> "${FAKE_LOG_DIR:?}/$driver.log"
 target=""
 previous=""
 for argument in "$@"; do
@@ -116,9 +130,15 @@ for argument in "$@"; do
   previous="$argument"
 done
 if [ -n "$target" ]; then
-  binary="target/$target/release/atp"
+  case "$target" in
+    *-windows-*) binary="target/$target/release/atp.exe" ;;
+    *) binary="target/$target/release/atp" ;;
+  esac
 else
-  binary="target/release/atp"
+  case "${FAKE_HOST_TARGET:-x86_64-unknown-linux-gnu}" in
+    *-windows-*) binary="target/release/atp.exe" ;;
+    *) binary="target/release/atp" ;;
+  esac
 fi
 mkdir -p "$(dirname "$binary")"
 cat > "$binary" <<SCRIPT
@@ -134,6 +154,8 @@ exit 0
 SCRIPT
 chmod 0755 "$binary"
 EOF
+
+cp "$FAKE_BIN/cargo" "$FAKE_BIN/cross"
 
 cat > "$FAKE_BIN/rustc" <<'EOF'
 #!/bin/sh
@@ -170,7 +192,7 @@ fi
 exec "${REAL_MV:?}" "$@"
 EOF
 
-chmod 0755 "$FAKE_BIN/git" "$FAKE_BIN/cargo" "$FAKE_BIN/rustc" \
+chmod 0755 "$FAKE_BIN/git" "$FAKE_BIN/cargo" "$FAKE_BIN/cross" "$FAKE_BIN/rustc" \
   "$FAKE_BIN/rustup" "$FAKE_BIN/mv"
 
 REV=$(tr -d '[:space:]' < "$REPO_ROOT/UPSTREAM_REV")
@@ -179,6 +201,7 @@ RUN_VERSION_TEXT="atp 9.9.9"
 RUN_EXEC_MARKER=""
 RUN_HOST_TARGET="x86_64-unknown-linux-gnu"
 RUN_MV_RACE_DIR=""
+RUN_CROSS_DRIVER="$FAKE_BIN/cross"
 LAST_RC=0
 LAST_OUTPUT=""
 LAST_LOG_DIR=""
@@ -206,6 +229,7 @@ run_build() {
     FAKE_EXEC_MARKER="$RUN_EXEC_MARKER" \
     FAKE_HOST_TARGET="$RUN_HOST_TARGET" \
     FAKE_MV_RACE_DIR="$RUN_MV_RACE_DIR" \
+    ATP_CROSS_DRIVER="$RUN_CROSS_DRIVER" \
     REAL_MV="$REAL_MV" \
     "$BASH_BIN" "$BUILD_HELPER" --pinned "$@" > "$LAST_OUTPUT" 2>&1
   LAST_RC=$?
@@ -216,6 +240,7 @@ run_build() {
   RUN_EXEC_MARKER=""
   RUN_HOST_TARGET="x86_64-unknown-linux-gnu"
   RUN_MV_RACE_DIR=""
+  RUN_CROSS_DRIVER="$FAKE_BIN/cross"
 }
 
 out_dir="$TEST_TMP/out-native-failure"
@@ -248,6 +273,23 @@ assert_contains "/.atp-build." "$LAST_LOG_DIR/mv.log"
 assert_contains "$out_dir/atp" "$LAST_LOG_DIR/mv.log"
 assert_no_stage_files "$out_dir"
 pass "successful native smoke atomically replaces the output"
+
+out_dir="$TEST_TMP/out-native-explicit-target"
+mkdir -p "$out_dir"
+make_existing_binary "$out_dir/atp" "0.1.0"
+native_target_marker="$TEST_TMP/native-target-executed"
+RUN_VERSION_TEXT="atp 9.9.8"
+RUN_EXEC_MARKER="$native_target_marker"
+run_build native-explicit-target --out "$out_dir" --target x86_64-unknown-linux-gnu
+expect_rc 0 "explicit native target build"
+[ -f "$native_target_marker" ] || fail "explicit native target skipped its runtime smoke test"
+[ "$("$out_dir/atp" --version)" = "atp 9.9.8" ] || fail "explicit native target was not installed"
+assert_contains "target add x86_64-unknown-linux-gnu" "$LAST_LOG_DIR/rustup.log"
+assert_contains "--target x86_64-unknown-linux-gnu" "$LAST_LOG_DIR/cargo.log"
+assert_empty_or_missing "$LAST_LOG_DIR/cross.log"
+assert_not_contains "runtime smoke test skipped" "$LAST_OUTPUT"
+assert_no_stage_files "$out_dir"
+pass "explicit host target stays on cargo and runs native smoke"
 
 out_dir="$TEST_TMP/out-directory-target"
 mkdir -p "$out_dir/atp"
@@ -287,24 +329,80 @@ fi
 assert_no_stage_files "$out_dir"
 pass "concurrent directory replacement fails without reporting a false install"
 
-out_dir="$TEST_TMP/out-foreign-target"
+for cross_target in \
+  x86_64-unknown-linux-musl \
+  aarch64-unknown-linux-gnu \
+  aarch64-unknown-linux-musl
+do
+  case "$cross_target" in
+    x86_64-unknown-linux-musl) cross_label="x86-musl" ;;
+    aarch64-unknown-linux-gnu) cross_label="arm-gnu" ;;
+    aarch64-unknown-linux-musl) cross_label="arm-musl" ;;
+  esac
+  out_dir="$TEST_TMP/out-cross-$cross_label"
+  mkdir -p "$out_dir"
+  make_existing_binary "$out_dir/atp" "0.1.0"
+  cross_marker="$TEST_TMP/cross-$cross_label-executed"
+  RUN_VERSION_STATUS=97
+  RUN_VERSION_TEXT="atp 8.8.8-$cross_label"
+  RUN_EXEC_MARKER="$cross_marker"
+  run_build "cross-$cross_label" --out "$out_dir" --target "$cross_target"
+  expect_rc 0 "$cross_target build"
+  assert_contains "runtime smoke test skipped" "$LAST_OUTPUT"
+  [ ! -e "$cross_marker" ] || fail "$cross_target binary was executed"
+  [ -x "$out_dir/atp" ] || fail "$cross_target binary was not installed"
+  assert_contains "atp 8.8.8-$cross_label" "$out_dir/atp"
+  assert_contains "--target $cross_target" "$LAST_LOG_DIR/cross.log"
+  assert_empty_or_missing "$LAST_LOG_DIR/cargo.log"
+  assert_empty_or_missing "$LAST_LOG_DIR/rustup.log"
+  assert_contains "/.atp-build." "$LAST_LOG_DIR/mv.log"
+  assert_no_stage_files "$out_dir"
+  pass "$cross_target uses cross, skips execution, and installs atomically"
+done
+
+out_dir="$TEST_TMP/out-missing-cross-driver"
 mkdir -p "$out_dir"
 make_existing_binary "$out_dir/atp" "0.1.0"
-foreign_marker="$TEST_TMP/foreign-executed"
-RUN_VERSION_STATUS=97
-RUN_VERSION_TEXT="atp 8.8.8"
-RUN_EXEC_MARKER="$foreign_marker"
-run_build foreign-target --out "$out_dir" --target aarch64-unknown-linux-musl
-expect_rc 0 "foreign target build"
-assert_contains "runtime smoke test skipped" "$LAST_OUTPUT"
-[ ! -e "$foreign_marker" ] || fail "foreign-target binary was executed"
-[ -x "$out_dir/atp" ] || fail "foreign-target binary was not installed"
-assert_contains "atp 8.8.8" "$out_dir/atp"
-assert_contains "target add aarch64-unknown-linux-musl" "$LAST_LOG_DIR/rustup.log"
-assert_contains "--target aarch64-unknown-linux-musl" "$LAST_LOG_DIR/cargo.log"
-assert_contains "/.atp-build." "$LAST_LOG_DIR/mv.log"
+cp "$out_dir/atp" "$TEST_TMP/missing-cross-driver-old"
+RUN_CROSS_DRIVER="missing-atp-cross-driver"
+run_build missing-cross-driver --out "$out_dir" --target aarch64-unknown-linux-gnu
+expect_rc 1 "missing cross driver"
+assert_contains "required build driver not found" "$LAST_OUTPUT"
+cmp "$out_dir/atp" "$TEST_TMP/missing-cross-driver-old" >/dev/null || \
+  fail "missing cross driver replaced the existing output"
+assert_empty_or_missing "$LAST_LOG_DIR/cargo.log"
+assert_empty_or_missing "$LAST_LOG_DIR/cross.log"
+assert_empty_or_missing "$LAST_LOG_DIR/rustup.log"
+assert_empty_or_missing "$LAST_LOG_DIR/mv.log"
 assert_no_stage_files "$out_dir"
-pass "foreign target skips execution and installs atomically"
+pass "missing cross driver fails before build and preserves existing output"
+
+out_dir="$TEST_TMP/out-windows-target"
+mkdir -p "$out_dir"
+make_existing_binary "$out_dir/atp.exe" "0.1.0"
+cp "$out_dir/atp.exe" "$TEST_TMP/windows-target-old"
+windows_marker="$TEST_TMP/windows-executed"
+RUN_HOST_TARGET="x86_64-pc-windows-msvc"
+RUN_VERSION_STATUS=0
+RUN_VERSION_TEXT="atp 7.7.7"
+RUN_EXEC_MARKER="$windows_marker"
+run_build windows-target --out "$out_dir" --target x86_64-pc-windows-msvc
+expect_rc 0 "Windows target build"
+[ -f "$windows_marker" ] || fail "native Windows binary skipped its runtime smoke test"
+assert_not_contains "runtime smoke test skipped" "$LAST_OUTPUT"
+[ -x "$out_dir/atp.exe" ] || fail "Windows binary was not installed with its .exe suffix"
+[ ! -e "$out_dir/atp" ] || fail "Windows build created an extensionless output"
+if cmp "$out_dir/atp.exe" "$TEST_TMP/windows-target-old" >/dev/null; then
+  fail "Windows success left the old binary in place"
+fi
+assert_contains "atp 7.7.7" "$out_dir/atp.exe"
+assert_contains "target add x86_64-pc-windows-msvc" "$LAST_LOG_DIR/rustup.log"
+assert_contains "--target x86_64-pc-windows-msvc" "$LAST_LOG_DIR/cargo.log"
+assert_contains "/.atp-build." "$LAST_LOG_DIR/mv.log"
+assert_contains "$out_dir/atp.exe" "$LAST_LOG_DIR/mv.log"
+assert_empty_or_missing "$LAST_LOG_DIR/cross.log"
+assert_no_stage_files "$out_dir"
+pass "native Windows target smokes, preserves .exe naming, and installs atomically"
 
 for git_log in "$TEST_TMP"/run-*/logs/git.log; do
   if grep -F -- "$REPO_ROOT/upstream" "$git_log" >/dev/null 2>&1; then

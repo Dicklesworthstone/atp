@@ -268,7 +268,9 @@ maybe_install_skill() {
   # Interactive prompt only. `curl | bash` keeps stdin for the script body,
   # so ask via /dev/tty; when there is no terminal, stay silent but helpful.
   [ "$QUIET" -eq 1 ] && return 0
-  if ! { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+  # A device node can exist and pass -r/-w without this process having a
+  # controlling terminal (CI and redirected test runners hit that case).
+  if ! (exec 3<> /dev/tty) 2>/dev/null; then
     info "Tip: re-run with --skill to also install the atp agent skill (Claude Code / Codex)"
     return 0
   fi

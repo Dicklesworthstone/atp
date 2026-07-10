@@ -1,7 +1,7 @@
 name: Release
 
 # Builds the standalone `atp` binary from the canonical asupersync source tree
-# at the exact commit pinned in UPSTREAM_REV, then publishes platform tarballs
+# at the exact commit pinned in UPSTREAM_REV, then publishes platform archives
 # + SHA256SUMS as a GitHub release. This repo intentionally contains no Rust
 # source: https://github.com/Dicklesworthstone/asupersync is the single source
 # of truth for ATP code.
@@ -149,6 +149,9 @@ jobs:
     needs: prepare
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -176,11 +179,70 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
           "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml
 
+  windows-contracts:
+    name: Windows installer contracts
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Parse PowerShell with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('install.ps1', 'scripts/test-install.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -ne 0) {
+              $parseErrors | ForEach-Object { [Console]::Error.WriteLine($_) }
+              throw "Windows PowerShell 5.1 parse failed for $file"
+            }
+          }
+
+      - name: Run installer contracts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\test-install.ps1
+
+      - name: Parse PowerShell with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('install.ps1', 'scripts/test-install.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -ne 0) {
+              $parseErrors | ForEach-Object { [Console]::Error.WriteLine($_) }
+              throw "PowerShell 7 parse failed for $file"
+            }
+          }
+
+      - name: Run installer contracts with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\test-install.ps1
+
   build:
     name: Build ${{ matrix.target }}
-    needs: [prepare, contracts]
+    needs: [prepare, contracts, windows-contracts]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +259,8 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-15-intel
             target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - name: Checkout atp repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -280,6 +344,7 @@ jobs:
           cargo build --release --locked --bin atp --features atp-cli --target ${{ matrix.target }}
 
       - name: Package tarball
+        if: runner.os != 'Windows'
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -311,23 +376,213 @@ jobs:
                               archive.addfile(info, source)
           PY
 
+      - name: Package Windows ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path dist, stage | Out-Null
+          Copy-Item "upstream/target/$env:TARGET/release/atp.exe" stage/atp.exe
+          Copy-Item LICENSE stage/LICENSE
+
+          $epochText = ((& git -C upstream show -s --format=%ct HEAD) | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $epochText -notmatch '^[0-9]+$') {
+            throw "Could not resolve the pinned upstream commit timestamp: '$epochText'"
+          }
+          $timestamp = [DateTimeOffset]::FromUnixTimeSeconds([long]$epochText)
+          $archive = [IO.Path]::GetFullPath("dist/atp-$env:TARGET.zip")
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archiveStream = [IO.File]::Open(
+            $archive, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+          )
+          $zip = [IO.Compression.ZipArchive]::new(
+            $archiveStream, [IO.Compression.ZipArchiveMode]::Create, $false
+          )
+          try {
+            foreach ($name in @('atp.exe', 'LICENSE')) {
+              $source = [IO.Path]::GetFullPath((Join-Path stage $name))
+              $entry = $zip.CreateEntry($name, [IO.Compression.CompressionLevel]::Optimal)
+              $entry.LastWriteTime = $timestamp
+              $entry.ExternalAttributes = 0
+              $input = [IO.File]::OpenRead($source)
+              $output = $entry.Open()
+              try {
+                $input.CopyTo($output)
+              } finally {
+                $output.Dispose()
+                $input.Dispose()
+              }
+            }
+          } finally {
+            $zip.Dispose()
+            $archiveStream.Dispose()
+          }
+
+          $verifyZip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $entries = @($verifyZip.Entries | ForEach-Object FullName)
+            if ($entries.Count -ne 2 -or ($entries -join ',') -cne 'atp.exe,LICENSE') {
+              throw "Unexpected Windows archive entries or order: $($entries -join ', ')"
+            }
+            foreach ($entry in $verifyZip.Entries) {
+              if ($entry.LastWriteTime.UtcDateTime -ne $timestamp.UtcDateTime) {
+                $delta = [Math]::Abs(($entry.LastWriteTime.UtcDateTime - $timestamp.UtcDateTime).TotalSeconds)
+                if ($delta -gt 2) {
+                  throw "ZIP timestamp for $($entry.FullName) is not derived from the upstream commit"
+                }
+              }
+            }
+          } finally {
+            $verifyZip.Dispose()
+          }
+
       - name: Smoke-test binary
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
+          binary=./stage/atp
+          if [ "$RUNNER_OS" = "Windows" ]; then binary=./stage/atp.exe; fi
           expected="atp ${RELEASE_TAG#v}"
-          actual="$(./stage/atp --version)"
+          actual="$("$binary" --version)"
           if [ "$actual" != "$expected" ]; then
             echo "Built binary version mismatch: expected '$expected', got '$actual'" >&2
             exit 1
           fi
-          ./stage/atp rq-keygen >/dev/null
+          "$binary" rq-keygen >/dev/null
 
-      - name: Upload artifact
+      - name: Install Windows archive locally and verify TCP transfer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $archive = (Resolve-Path "dist/atp-$env:TARGET.zip").Path
+          $installDir = Join-Path $env:RUNNER_TEMP 'atp-windows-bin'
+          $sourceDir = Join-Path $env:RUNNER_TEMP 'atp-tcp-source'
+          $receiveDir = Join-Path $env:RUNNER_TEMP 'atp-tcp-received'
+          $senderErr = Join-Path $env:RUNNER_TEMP 'atp-sender.stderr'
+          $receiverOut = Join-Path $env:RUNNER_TEMP 'atp-receiver.stdout'
+          $receiverErr = Join-Path $env:RUNNER_TEMP 'atp-receiver.stderr'
+          Remove-Item $installDir, $sourceDir, $receiveDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $senderErr, $receiverOut, $receiverErr -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $sourceDir, $receiveDir | Out-Null
+
+          $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
+            -Offline $archive -Checksum $archiveHash -Version $env:RELEASE_TAG `
+            -Dest $installDir -Force -Verify -Quiet
+          if ($LASTEXITCODE -ne 0) {
+            throw "install.ps1 rejected the built Windows archive with exit code $LASTEXITCODE"
+          }
+
+          $installed = Join-Path $installDir 'atp.exe'
+          $expectedVersion = "atp $($env:RELEASE_TAG.TrimStart('v'))"
+          $actualVersion = (& $installed --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualVersion -ne $expectedVersion) {
+            throw "Locally installed binary version mismatch: expected '$expectedVersion', got '$actualVersion'"
+          }
+          & $installed rq-keygen | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Locally installed rq-keygen smoke test failed' }
+
+          $payload = Join-Path $sourceDir 'payload.bin'
+          $bytes = New-Object byte[] (1024 * 1024)
+          [Random]::new(8472).NextBytes($bytes)
+          [IO.File]::WriteAllBytes($payload, $bytes)
+
+          $receiver = Start-Process -FilePath $installed -ArgumentList @(
+            'recv', $receiveDir, '--listen', '127.0.0.1:0',
+            '--transport', 'tcp', '--once', '--no-delta'
+          ) -RedirectStandardOutput $receiverOut -RedirectStandardError $receiverErr -PassThru
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            $endpoint = $null
+            while ([DateTime]::UtcNow -lt $deadline) {
+              if ($receiver.HasExited) {
+                throw "TCP receiver exited before readiness with code $($receiver.ExitCode): $(Get-Content $receiverErr -Raw)"
+              }
+              if (Test-Path $receiverErr) {
+                $readyText = Get-Content $receiverErr -Raw
+                if ($readyText -match 'atp: tcp listening on ([^,\s]+)') {
+                  $endpoint = $Matches[1]
+                  break
+                }
+              }
+              Start-Sleep -Milliseconds 200
+            }
+            if (-not $endpoint) { throw "TCP receiver did not become ready: $(Get-Content $receiverErr -Raw)" }
+
+            $senderLines = @(& $installed send $payload $endpoint --transport tcp --no-delta 2> $senderErr)
+            $senderExit = $LASTEXITCODE
+            $senderText = (($senderLines | ForEach-Object { [string]$_ }) -join "`n").Trim()
+            if ($senderExit -ne 0) {
+              throw "TCP sender failed with exit code ${senderExit}: $(Get-Content $senderErr -Raw)"
+            }
+            try {
+              $senderReport = $senderText | ConvertFrom-Json
+            } catch {
+              throw "TCP sender did not emit one JSON report: '$senderText'"
+            }
+            if ($senderReport.event -cne 'atp_send' -or
+                $senderReport.transport -cne 'tcp' -or
+                $senderReport.committed -ne $true -or
+                $senderReport.sha_ok -ne $true -or
+                $senderReport.merkle_ok -ne $true) {
+              throw "TCP sender report did not prove a committed SHA/Merkle-valid transfer: $senderText"
+            }
+            if (-not $receiver.WaitForExit(30000)) { throw 'TCP receiver did not exit after the one-shot transfer' }
+            if ($receiver.ExitCode -ne 0) {
+              throw "TCP receiver failed with code $($receiver.ExitCode): $(Get-Content $receiverErr -Raw)"
+            }
+          } finally {
+            if (-not $receiver.HasExited) {
+              Stop-Process -Id $receiver.Id -Force -ErrorAction SilentlyContinue
+              $receiver.WaitForExit()
+            }
+          }
+
+          $received = Join-Path $receiveDir 'payload.bin'
+          if (-not (Test-Path $received)) { throw 'TCP transfer did not create the destination payload' }
+          $receiverText = (Get-Content -LiteralPath $receiverOut -Raw).Trim()
+          try {
+            $receiverReport = $receiverText | ConvertFrom-Json
+          } catch {
+            throw "TCP receiver did not emit one JSON report: '$receiverText'"
+          }
+          if ($receiverReport.event -cne 'atp_receive' -or
+              $receiverReport.transport -cne 'tcp' -or
+              $receiverReport.committed -ne $true) {
+            throw "TCP receiver report did not prove a committed transfer: $receiverText"
+          }
+          $sourceHash = (Get-FileHash -Algorithm SHA256 $payload).Hash
+          $receivedHash = (Get-FileHash -Algorithm SHA256 $received).Hash
+          if ($sourceHash -ne $receivedHash) {
+            throw "TCP transfer hash mismatch: source=$sourceHash received=$receivedHash"
+          }
+          Write-Host "Windows install.ps1 and committed SHA-valid TCP transfer verified: $sourceHash"
+
+      - name: Upload tarball
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: atp-${{ matrix.target }}
           path: dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Windows ZIP
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atp-${{ matrix.target }}
+          path: dist/*.zip
           if-no-files-found: error
 
   release:
@@ -363,11 +618,12 @@ jobs:
             atp-aarch64-unknown-linux-gnu.tar.gz
             atp-aarch64-apple-darwin.tar.gz
             atp-x86_64-apple-darwin.tar.gz
+            atp-x86_64-pc-windows-msvc.zip
           )
           shopt -s nullglob
-          actual=(atp-*.tar.gz)
+          actual=(atp-*.tar.gz atp-*.zip)
           if [ "${#actual[@]}" -ne "${#expected[@]}" ]; then
-            echo "Expected ${#expected[@]} release tarballs, found ${#actual[@]}" >&2
+            echo "Expected ${#expected[@]} release archives, found ${#actual[@]}" >&2
             exit 1
           fi
           for asset in "${expected[@]}"; do
@@ -384,6 +640,7 @@ jobs:
         with:
           subject-path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
 
       - name: Create verified draft, upload exact assets, then publish
@@ -407,6 +664,10 @@ jobs:
           \`\`\`bash
           curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$RELEASE_TAG/install.sh" | \
             bash -s -- --version "$RELEASE_TAG"
+          \`\`\`
+
+          \`\`\`powershell
+          & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$RELEASE_TAG/install.ps1"))) -Version "$RELEASE_TAG" -Verify
           \`\`\`
           EOF
 
@@ -458,9 +719,9 @@ jobs:
           trap cleanup_draft EXIT
 
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            dist/atp-*.tar.gz dist/SHA256SUMS
+            dist/atp-*.tar.gz dist/atp-*.zip dist/SHA256SUMS
 
-          expected='["SHA256SUMS","atp-aarch64-apple-darwin.tar.gz","atp-aarch64-unknown-linux-gnu.tar.gz","atp-aarch64-unknown-linux-musl.tar.gz","atp-x86_64-apple-darwin.tar.gz","atp-x86_64-unknown-linux-gnu.tar.gz","atp-x86_64-unknown-linux-musl.tar.gz"]'
+          expected='["SHA256SUMS","atp-aarch64-apple-darwin.tar.gz","atp-aarch64-unknown-linux-gnu.tar.gz","atp-aarch64-unknown-linux-musl.tar.gz","atp-x86_64-apple-darwin.tar.gz","atp-x86_64-pc-windows-msvc.zip","atp-x86_64-unknown-linux-gnu.tar.gz","atp-x86_64-unknown-linux-musl.tar.gz"]'
           actual="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json isDraft,assets \
             --jq '[.isDraft, ([.assets[].name] | sort)]')"
