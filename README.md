@@ -44,9 +44,11 @@ Any K(+ε) of the N symbols sprayed at the receiver reconstruct the data — no 
 special, so *which* packets got lost doesn't matter, only *how many*. Loss stops being
 a latency problem (round trips per lost packet) and becomes a bandwidth line item
 (a few percent of repair symbols). Feedback is a small number of bounded rounds, not
-a per-packet ACK conversation. With the default zero-loss hint, atp chooses a paced
-reliable source stream so clean links do not pay the FEC tax; lossy paths require an
-explicit loss hint today.
+a per-packet ACK conversation. On the fountain transports (`rq`/`quic`), the
+default zero-loss hint selects a paced reliable source stream so clean links do
+not pay the FEC tax; lossy paths require an explicit loss hint today. (The
+out-of-the-box `--transport` default is plain TCP — pick `rq` or `quic` to get
+any of this.)
 
 ### Why atp?
 
@@ -54,7 +56,7 @@ explicit loss hint today.
 |---------|---------------|
 | **Loss-tolerant data plane** | RaptorQ symbols over UDP/QUIC turn packet loss into repair traffic instead of per-loss retransmit stalls. Across the displayed harsh-regime cells (10% loss + reorder + dup + 200 ms RTT), atp's geomean is **~1.9× faster than tuned rsync** |
 | **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed — a failed transfer never leaves partially-written garbage in the destination |
-| **Fast on clean links too** | Adaptive path: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
+| **Fast on clean links too** | Adaptive path on the rq/quic transports: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
 | **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 2.9–4.8× faster than rsync across all four link regimes |
 | **Explicit security tiers** | Plain TCP is the unauthenticated default; raw UDP can use lab plaintext or per-symbol HMAC; QUIC provides TLS 1.3 with fail-closed certificate verification. `auto --no-delta` is a best-effort availability ladder and may select a weaker tier |
 | **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed — and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
@@ -126,7 +128,8 @@ Link regimes: **perfect** (1 Gbit, 2 ms), **good** (200 Mbit, 25 ms, 0.1% loss),
 ### Scoreboard — plaintext tier (atp vs tuned rsync daemon)
 
 Wall-clock ratio = atp median ÷ rsync median (lower is better; **< 1.0 = atp wins**).
-Measured 2026-07-08/09 (atp 0.3.5 release build), all displayed cells SHA-verified:
+Measured 2026-07-08/09 with atp 0.3.5 release builds (the most recent full
+scoreboard sweep), all displayed cells SHA-verified:
 
 | Workload | perfect | good | bad | broken |
 |----------|---------|------|-----|--------|
@@ -149,7 +152,8 @@ uses the successful runs; the excluded failure was a recorded route-setup error.
 
 The headline cell: **500 MB over a 10%-loss, 200 ms, 10 Mbit link**. When first won
 (ledger MATRIX-209), atp posted **564.8 s vs rsync's 574.5 s** with atp's *worst*
-rep beating rsync's *best* rep; a later pinned-source re-measure holds the win at 0.93.
+rep beating rsync's *best* rep; a 2026-07-09 re-measure on the then-current
+build holds the win at 0.93.
 Before the congestion-control campaign, atp timed out entirely on that cell
 (900 s+); TCP-based tools survive it only because TCP grinds; fountain coding
 wins it.
@@ -366,12 +370,18 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 # Build from the pinned source instead of downloading a binary
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --from-source
+
+# Air-gapped: install a pre-downloaded tarball with an explicit checksum
+# (download install.sh + the tarball + SHA256SUMS on a connected machine first)
+bash install.sh --offline ./atp-x86_64-unknown-linux-musl.tar.gz --checksum <sha256>
 ```
 
 ### Prebuilt binaries
 
 The hardened workflow on `main` requires all six tarballs below plus `SHA256SUMS`
-before publishing. Older releases may have a smaller platform set:
+before publishing. The current v0.3.7 release predates that gate and ships five
+(no aarch64 musl yet — the installer automatically falls back to the aarch64
+glibc build). Older releases may have a smaller platform set:
 
 | Platform | Artifact |
 |----------|----------|
@@ -416,7 +426,8 @@ Send a file or directory tree. `TARGET` is `host:port` (a listening `atp recv`/
 ssh, then streams over the chosen transport).
 
 ```
---transport auto|tcp|rq|quic   Transport (default tcp; rq = RaptorQ/UDP; auto = quic→rq→tcp)
+--transport auto|tcp|rq|quic   Transport (default tcp; rq = RaptorQ/UDP;
+                               auto = quic→rq→tcp, needs --no-delta — delta-enabled auto sends TCP only)
 --rq-auth-key-hex HEX          Per-symbol auth key (or ATP_RQ_AUTH_KEY_HEX)
 --rq-allow-unauthenticated-lab Lab tier: explicitly disable symbol auth
 --ca PATH --server-name NAME   QUIC: verify the receiver's TLS certificate
