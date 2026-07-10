@@ -68,8 +68,9 @@ git push
 #    i.e. asupersync's Cargo.toml package version)
 git tag vX.Y.Z && git push origin vX.Y.Z
 
-# 4. Watch the release build
-gh run watch --repo Dicklesworthstone/atp
+# 4. Watch the release build (non-interactive: list, then watch by id)
+gh run list --repo Dicklesworthstone/atp --limit 3
+gh run watch <run-id> --repo Dicklesworthstone/atp --exit-status
 ```
 
 Notes:

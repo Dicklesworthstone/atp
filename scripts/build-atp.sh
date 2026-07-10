@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
     --pinned) PINNED=1; shift ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -67,7 +67,9 @@ BIN_SUBPATH="release/atp"
 if [ -n "$TARGET" ]; then
   BUILD_ARGS+=(--target "$TARGET")
   BIN_SUBPATH="$TARGET/release/atp"
-  rustup target add "$TARGET" >/dev/null 2>&1 || true
+  # Run inside the source tree so the target lands on the toolchain pinned by
+  # its rust-toolchain.toml, not whatever toolchain is active in this repo.
+  (cd "$SRC" && rustup target add "$TARGET" >/dev/null 2>&1) || true
 fi
 
 echo "==> cargo ${BUILD_ARGS[*]}"

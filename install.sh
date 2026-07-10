@@ -396,8 +396,9 @@ acquire_lock() {
 TMP=""
 LOCKED=0
 cleanup() {
-  [ -n "$TMP" ] && rm -rf "$TMP"
-  [ "$LOCKED" -eq 1 ] && rm -rf "$LOCK_FILE"
+  if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
+  if [ "$LOCKED" -eq 1 ]; then rm -rf "$LOCK_FILE"; fi
+  return 0
 }
 trap cleanup EXIT
 
@@ -578,8 +579,10 @@ elif [ "$FROM_SOURCE" -eq 1 ]; then
   build_from_source
 else
   info "Downloading $TAR (${VERSION})..."
+  CURL_PROGRESS=(--progress-bar)
+  [ "$QUIET" -eq 1 ] && CURL_PROGRESS=(-sS)
   if ! run_with_spinner "Downloading atp ${VERSION}..." \
-    curl -fSL "${PROXY_ARGS[@]}" --progress-bar "$URL" -o "$TMP/$TAR"; then
+    curl -fSL "${PROXY_ARGS[@]}" "${CURL_PROGRESS[@]}" "$URL" -o "$TMP/$TAR"; then
     warn "Download failed; falling back to build-from-source"
     FROM_SOURCE=1
     build_from_source

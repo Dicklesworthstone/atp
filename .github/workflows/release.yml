@@ -64,6 +64,25 @@ jobs:
           ref: ${{ steps.pin.outputs.rev }}
           path: upstream
 
+      - name: Guard — release tag must match the pinned crate version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          want="${tag#v}"
+          have=$(grep -m1 '^version = "' upstream/Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          if [ -z "$have" ]; then
+            echo "Could not read package version from upstream/Cargo.toml" >&2; exit 1
+          fi
+          if [ "$want" != "$have" ]; then
+            echo "Release tag $tag does not match the pinned asupersync crate version $have." >&2
+            echo "The atp binary would report 'atp $have'. Update UPSTREAM_REV or retag as v$have." >&2
+            exit 1
+          fi
+          echo "Tag $tag matches pinned crate version $have"
+
       - name: Install musl toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools

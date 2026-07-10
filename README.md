@@ -55,7 +55,7 @@ to a paced reliable stream, so you never pay the FEC tax when you don't need it.
 | **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed — a failed transfer never leaves partially-written garbage in the destination |
 | **Fast on clean links too** | Adaptive path: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
 | **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 3–5× faster than rsync at every loss rate |
-| **Real security tiers** | From lab-plaintext to per-symbol HMAC to full QUIC TLS 1.3 with certificate verification *plus* per-symbol auth — chosen explicitly, never silently downgraded |
+| **Real security tiers** | From lab-plaintext to per-symbol HMAC to full QUIC TLS 1.3 with fail-closed certificate verification — chosen explicitly, never silently downgraded |
 | **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed — and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
 | **1-RTT startup** | QUIC handshake instead of ssh session setup: encrypted 500 KB transfers are **3–5× faster** than rsync-over-ssh |
 
@@ -64,7 +64,8 @@ to a paced reliable stream, so you never pay the FEC tax when you don't need it.
 ## Quick Example
 
 ```bash
-# 0. One-time: generate a shared symbol-authentication key (32 bytes, hex)
+# 0. One-time: generate a symbol-authentication key (32 bytes, hex) and share
+#    it with both machines (env var ATP_RQ_AUTH_KEY_HEX also works)
 KEY=$(atp rq-keygen)
 
 # 1. On the receiving machine
@@ -95,7 +96,7 @@ designed so that a false win is structurally impossible. The full method, every
 result, and — just as importantly — every *refuted* optimization hypothesis are
 logged in the append-only
 [evidence ledger](https://github.com/Dicklesworthstone/asupersync/blob/main/docs/atp_rq_beat_rsync_ledger.md)
-(231 numbered experiments and counting).
+(over 230 numbered experiments and counting).
 
 ### The method (summarized)
 
@@ -131,10 +132,11 @@ Measured 2026-07-08/09 (atp 0.3.5 release build), all cells SHA-verified:
 | tree (2,000 files) | 1.09 (loss, noisy) | **0.95** | **0.79** | **0.68** |
 | tree (400 files, large) | **0.60** (1.7×) | **0.67** (1.5×) | **0.62** (1.6×) | **0.41** (2.5×) |
 
-Per-regime geometric means: **perfect 0.50 · good 0.63 · bad 0.64 · broken 0.54** —
-atp is roughly 1.6–2× faster than tuned rsync across the matrix, and nearly 2× faster
-on the *worst* links, which is exactly where a transfer tool earns its keep. The
-authenticated tier (per-symbol HMAC vs rsync-over-ssh) tracks these results.
+Per-regime geometric means over the cells above: **perfect 0.61 · good 0.63 ·
+bad 0.64 · broken 0.54** — atp is roughly 1.6× faster than tuned rsync across the
+matrix and nearly 2× faster on the *worst* links, which is exactly where a transfer
+tool earns its keep. The authenticated tier (per-symbol HMAC vs rsync-over-ssh)
+tracks these results.
 
 The headline cell: **500 MB over a 10%-loss, 200 ms, 10 Mbit link — atp 564.8 s vs
 rsync 574.5 s**, with atp's *worst* rep beating rsync's *best* rep. Before the
@@ -247,8 +249,9 @@ The FEC spray is not always the right tool, and atp knows it:
 - **Small trees** → consecutive small files are packed into single wire entries
   (2,000-file tree → 1 entry) so tiny files don't each pay a coding + round-trip
   floor; the Merkle commitment is still over the logical files on both sides.
-- `--transport auto` tries QUIC → RaptorQ/UDP → TCP and records each attempt in the
-  transfer report.
+- `--transport auto` tries QUIC → RaptorQ/UDP → TCP and records each attempt in
+  the transfer report. (With delta planning enabled — the default — `auto` goes
+  straight to TCP; see [Limitations](#limitations).)
 
 ### Verification is structural, not optional
 
@@ -283,7 +286,7 @@ Three explicit tiers — you always choose; nothing silently downgrades:
 |------|-------|--------------|
 | **Lab / plaintext** | `--rq-allow-unauthenticated-lab` (both ends) | No crypto. For benchmarks, airgapped labs, and trusted links only. The flag name is deliberately embarrassing to type in production |
 | **Authenticated** | `--rq-auth-key-hex <64-hex>` (both ends, or env `ATP_RQ_AUTH_KEY_HEX`) | Per-symbol HMAC on every UDP symbol — forged or replayed symbols are rejected before they touch the decoder. Generate keys with `atp rq-keygen` |
-| **Encrypted** | `--transport quic` + receiver `--server-cert/--server-key`, sender `--ca/--server-name` (+ the auth key) | Full TLS 1.3 with real X.509 verification (chain, hostname, signature — fail-closed, no `--insecure` escape hatch), 1-RTT AEAD on every packet, *plus* per-symbol auth |
+| **Encrypted** | `--transport quic` + receiver `--server-cert/--server-key`, sender `--ca/--server-name` | Full TLS 1.3 with real X.509 verification (chain, hostname, signature — fail-closed, no `--insecure` escape hatch); every packet, symbols included, is authenticated and encrypted by the QUIC 1-RTT AEAD |
 
 Details that matter (from the
 [threat model](https://github.com/Dicklesworthstone/asupersync/blob/main/docs/quic_atp_threat_model.md)):
@@ -293,6 +296,10 @@ Details that matter (from the
   hostnames, and expired certs fail closed. There is **no insecure skip-verify mode**.
 - Replay windows, anti-amplification limits (3× envelope), and bounded datagram
   queues are on by default.
+- On direct QUIC transfers the per-symbol HMAC key is **ignored** (the CLI says so
+  in `--help`): QUIC's 1-RTT AEAD already authenticates and encrypts every symbol
+  datagram, so a second MAC would be redundant. The per-symbol HMAC tier exists for
+  the raw-UDP data plane, which has no transport crypto of its own.
 - Honest boundaries: the encrypted tier's data plane uses an asupersync-specific
   short header (it is not generic-QUIC wire-interoperable), and the plain TCP
   transport authenticates content against the manifest but has no per-symbol auth.
@@ -377,10 +384,10 @@ ssh, then streams over the chosen transport).
 --rq-auth-key-hex HEX          Per-symbol auth key (or ATP_RQ_AUTH_KEY_HEX)
 --rq-allow-unauthenticated-lab Lab tier: explicitly disable symbol auth
 --ca PATH --server-name NAME   QUIC: verify the receiver's TLS certificate
---bwlimit BYTES_PER_SEC        Hard pacing cap
+--bwlimit BYTES_PER_SEC        Hard pacing cap (quic/auto transports)
 --max-bytes N                  Transfer size ceiling (default 4 GiB — raise for bigger)
 --workers N                    Parallel workers (default 4)
---symbol-size N                RaptorQ symbol size (default 1200; ≤1144 with auth envelope on QUIC)
+--symbol-size N                RaptorQ symbol size (default 1400; QUIC requires ≤1144, see below)
 --repair-overhead X            Proactive repair factor (e.g. 1.1 = +10% repair symbols)
 --rq-round0-loss-pct P         Size round-0 repair for an expected loss rate
 --streams N                    UDP fan-out sockets for the symbol spray
@@ -399,8 +406,12 @@ the persistent daemon-style form of the same thing.
 --once                         Exit after one transfer (recv)
 --server-cert PATH --server-key PATH   QUIC: TLS certificate + key to present
 --rq-auth-key-hex HEX          Per-symbol auth key (must match sender)
---max-bytes N / --workers N / --symbol-size N   As on the sender
+--max-bytes N / --workers N / --symbol-size N   As on the sender (symbol size must match)
 ```
+
+Note on ports: the receiver's delta-planning sidecar listens on **listen-port + 1**
+(e.g. `8472` → sidecar `8473`). If a firewall blocks it, transfers still work — the
+sender logs a warning and falls back to full-object transfer.
 
 ### `atp rq-keygen`
 
@@ -408,22 +419,27 @@ Print a fresh 32-byte symbol-authentication key as hex. Share it with both ends
 (e.g. via your secrets manager) and pass it as `--rq-auth-key-hex` or
 `ATP_RQ_AUTH_KEY_HEX`.
 
-### Encrypted-tier example (QUIC + TLS 1.3 + symbol auth)
+### Encrypted-tier example (QUIC + TLS 1.3)
 
 ```bash
-KEY=$(atp rq-keygen)
-
 # Receiver: present a TLS certificate (any serverAuth-EKU leaf works — e.g. step-ca,
 # mkcert, or your internal CA)
 atp recv ./inbox --listen 0.0.0.0:8472 --transport quic --once \
-  --symbol-size 1141 --rq-auth-key-hex "$KEY" \
+  --symbol-size 1144 \
   --server-cert cert.pem --server-key key.pem
 
 # Sender: verify that certificate — fail-closed, no skip-verify option
 atp send ./dataset receiver.example.com:8472 --transport quic \
-  --symbol-size 1141 --rq-auth-key-hex "$KEY" \
+  --symbol-size 1144 \
   --ca ca.pem --server-name receiver.example.com
 ```
+
+Two things to know: `--symbol-size ≤ 1144` is **required** on QUIC (the default
+1400 doesn't fit a 1200-byte datagram once the 56-byte symbol envelope is added —
+atp fails closed with a message saying exactly that), and no `--rq-auth-key-hex`
+is needed: on direct QUIC the per-symbol key is ignored because QUIC's AEAD
+already authenticates every symbol datagram. `--ca` can be omitted when the
+receiver's certificate chains to a system trust root.
 
 ---
 
@@ -446,9 +462,11 @@ Honesty section — read before deploying:
   fast and verified; it is not (yet) a full mirroring toolchain.
 - **Transfers above 4 GiB need `--max-bytes`** raised explicitly (a deliberate
   fail-closed default).
-- **Delta re-sync currently pins the fallback chain to TCP** (delta + fountain
-  spray composition is future work); use `--no-delta` when you want the rq/quic
-  data plane for a re-sync.
+- **`--transport auto` restricts itself to TCP while delta planning is enabled**
+  (the default). Explicit `--transport rq` / `--transport quic` work fine with
+  delta on — the planner simply falls back to full-object transfer when the
+  receiver has no delta state — but `auto`'s QUIC→RQ→TCP ladder only engages
+  with `--no-delta`.
 - **Nightly Rust for source builds.** Prebuilt binaries don't care, but building
   from source uses the nightly toolchain pinned by the asupersync tree.
 
@@ -467,18 +485,20 @@ both ends.
 
 That's the point — the sender verifies the receiver's certificate chain, hostname,
 and validity, and there is no `--insecure` bypass. Make sure `--ca` points at the CA
-that signed the receiver's `--server-cert`, and `--server-name` matches a SAN in
-that certificate.
+that signed the receiver's `--server-cert` (or that the cert chains to a system
+trust root), and that `--server-name` matches a SAN in that certificate
+(`--server-name` defaults to the target host).
 
 ### "object size exceeds limit" / transfer rejected at 4 GiB
 
 Raise `--max-bytes` on **both** ends (e.g. `--max-bytes 6442450944` for a 6 GiB
 ceiling). The default is a fail-closed guard, not a hard capability limit.
 
-### QUIC + symbol auth rejects my `--symbol-size`
+### "max_datagram_size (1200) must be at least symbol_size (1400) + the 56-byte authenticated envelope header"
 
-With the 56-byte authenticated envelope, symbols must fit a 1200-byte datagram:
-use `--symbol-size 1144` or smaller (the benchmark suite uses 1141).
+The QUIC transport carries one symbol per 1200-byte datagram, and each symbol
+wears a 56-byte envelope — so the default `--symbol-size 1400` cannot fit. Pass
+`--symbol-size 1144` or smaller **on both ends** for `--transport quic`.
 
 ### Transfers are slow in a debug build
 
@@ -526,10 +546,11 @@ active MITM could; auth: symbols are HMAC'd; encrypted: everything is TLS 1.3 AE
 
 ### Does it work over the public internet?
 
-Yes — any UDP-reachable `host:port`, or the `user@host:/path` SSH bootstrap which
-needs only ssh access to start the remote end. NAT-traversal machinery (STUN,
-rendezvous, relays) exists in the underlying stack but isn't wired into the CLI yet;
-today you need a reachable address or ssh.
+Yes — any UDP-reachable `host:port`, or the `user@host:/path` SSH bootstrap, which
+needs ssh access plus an `atp` binary on the remote host (it spawns the remote
+receiver for you; point `--remote-atp` at the binary if it isn't on `PATH`).
+NAT-traversal machinery (STUN, rendezvous, relays) exists in the underlying stack
+but isn't wired into the CLI yet; today you need a reachable address or ssh.
 
 ### Why does the sender use more memory than rsync on lossy links?
 
