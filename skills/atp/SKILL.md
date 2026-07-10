@@ -2,9 +2,8 @@
 name: atp
 description: >-
   Run, debug, and tune atp transfers (fountain-coded rsync alternative). Use
-  when sending files with atp, choosing --transport or security tiers,
-  reading transfer JSON reports, benchmarking vs rsync, or embedding atp as
-  a Rust library (asupersync crate).
+  when sending files with atp, picking transports or security tiers, reading
+  reports, or embedding the asupersync crate.
 dependencies:
   - "atp release binary (install.sh) — debug builds are orders of magnitude slower at RaptorQ decode"
   - "Both ends run atp; explicit tuning flags must match on both ends"

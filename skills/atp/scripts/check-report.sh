@@ -19,6 +19,8 @@ for d in walk(r):
     committed = d.get("committed", committed)
     sha = d.get("sha_ok", sha)
     rounds = d.get("feedback_rounds", rounds)
+if committed is True and sha is False:
+    print("VERDICT: FAIL — committed=true but sha_ok=false (should be impossible; investigate)"); sys.exit(1)
 if committed is True:
     extra = f", feedback_rounds={rounds}" if rounds is not None else ""
     extra += ", sha_ok=true" if sha else ""

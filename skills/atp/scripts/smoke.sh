@@ -17,6 +17,7 @@ KEY=$("$ATP" rq-keygen) || { echo "FAIL: rq-keygen"; exit 1; }
 "$ATP" recv "$WORK/out" --listen "127.0.0.1:$PORT" --transport rq --once \
   --rq-auth-key-hex "$KEY" > "$WORK/recv.json" 2>"$WORK/recv.err" &
 RECV_PID=$!
+trap 'kill "$RECV_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 1
 
 if ! "$ATP" send "$WORK/in/payload.bin" "127.0.0.1:$PORT" --transport rq \
