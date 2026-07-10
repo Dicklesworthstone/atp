@@ -20,7 +20,13 @@ instead of a retransmit stall. Every transfer is SHA-256 verified end-to-end and
 <h3>Quick Install</h3>
 
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 5.1+)
+irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
 ```
 
 </div>
@@ -348,7 +354,13 @@ Details that matter (from the
 ### Quick install (recommended)
 
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 5.1+)
+irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
 ```
 
 The installer detects your platform, downloads the right prebuilt binary from the

@@ -73,8 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 ```
 
 ```powershell
-# Windows (PowerShell 5.1+) — installer staged 2026-07-10; if the URL 404s,
-# Windows support hasn't landed on main yet (check the repo)
+# Windows (PowerShell 5.1+)
 irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
 ```
 
