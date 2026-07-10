@@ -209,15 +209,32 @@ locate_skill_source() {
     fi
   fi
   # Piped install (curl | bash): fetch the repo tarball — tiny, no Rust source.
+  # Pin the skill to the resolved release tag when we have one so the skill
+  # always matches the binary being installed; fall back to main for tags that
+  # predate the bundled skill, or when no version was resolved (--from-source,
+  # --offline, ARTIFACT_URL). Progress goes to stderr: callers capture stdout.
   [ -n "${TMP:-}" ] || return 1
-  local tarball="$TMP/skill-repo.tar.gz" root="$TMP/skill-repo"
-  curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
-    "https://codeload.github.com/${OWNER}/${REPO}/tar.gz/refs/heads/main" \
-    -o "$tarball" 2>/dev/null || return 1
-  mkdir -p "$root"
-  tar -xzf "$tarball" -C "$root" --strip-components=1 || return 1
-  [ -f "$root/skills/atp/SKILL.md" ] || return 1
-  echo "$root/skills/atp"
+  local candidate_refs="refs/heads/main" ref tarball root
+  if [ -n "${VERSION:-}" ]; then
+    candidate_refs="refs/tags/${VERSION} ${candidate_refs}"
+  fi
+  for ref in $candidate_refs; do
+    tarball="$TMP/skill-repo-${ref##*/}.tar.gz"
+    root="$TMP/skill-repo-${ref##*/}"
+    curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
+      "https://codeload.github.com/${OWNER}/${REPO}/tar.gz/${ref}" \
+      -o "$tarball" 2>/dev/null || continue
+    mkdir -p "$root"
+    tar -xzf "$tarball" -C "$root" --strip-components=1 2>/dev/null || continue
+    if [ -f "$root/skills/atp/SKILL.md" ]; then
+      if [ -n "${VERSION:-}" ] && [ "$ref" = "refs/heads/main" ]; then
+        info "Agent skill: not available from the ${VERSION} tag; using main" >&2
+      fi
+      echo "$root/skills/atp"
+      return 0
+    fi
+  done
+  return 1
 }
 
 install_skill_copies() {
