@@ -13,3 +13,6 @@ SHA256SUMS
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# User-provided source illustration stays local; only the webp ships.
+/atp_illustration.png

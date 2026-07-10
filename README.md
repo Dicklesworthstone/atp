@@ -1,8 +1,6 @@
-<!-- illustration placeholder: drop atp_illustration.webp here and uncomment
 <p align="center">
   <img src="atp_illustration.webp" alt="atp — fountain-coded file transfer" width="800">
 </p>
--->
 
 # atp
 
