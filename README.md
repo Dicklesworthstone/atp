@@ -54,7 +54,7 @@ to a paced reliable stream, so you never pay the FEC tax when you don't need it.
 | **Loss-immune data plane** | RaptorQ symbols over UDP/QUIC: 10% packet loss ≈ 10% extra bandwidth, not a stalled pipe. On the harshest benchmark regime (10% loss + reorder + dup + 200 ms RTT), atp is **~1.9× faster than tuned rsync** across the board |
 | **Fail-closed verification** | SHA-256 over every file (and a Merkle-committed manifest for trees). Bytes are staged, verified, then committed — a failed transfer never leaves partially-written garbage in the destination |
 | **Fast on clean links too** | Adaptive path: a BBR-style delivery-rate-sampled, gain-cycled stream on clean links (~946 Mbit/s on a 1 Gbit path), fountain spray under loss. atp beats tuned rsync on large clean transfers as well (500 MB: 4.52 s vs 5.13 s) |
-| **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 3–5× faster than rsync at every loss rate |
+| **Small files & trees** | Trees are packed (2,000 small files → 1 wire entry) and Merkle-verified. 500 KB transfers run 2.9–4.8× faster than rsync across all four link regimes |
 | **Real security tiers** | From lab-plaintext to per-symbol HMAC to full QUIC TLS 1.3 with fail-closed certificate verification — chosen explicitly, never silently downgraded |
 | **rsync-like delta re-sync** | Content-defined chunking (FastCDC) + IBLT set reconciliation + sub-chunk rolling-checksum diffs move only what changed — and the reconstruction is still hash-verified, so a checksum collision can never commit wrong bytes |
 | **1-RTT startup** | QUIC handshake instead of ssh session setup: encrypted 500 KB transfers are **3–5× faster** than rsync-over-ssh |
@@ -75,6 +75,7 @@ atp recv ./inbox --listen 0.0.0.0:8472 --transport rq --once --rq-auth-key-hex "
 atp send ./dataset receiver.example.com:8472 --transport rq --rq-auth-key-hex "$KEY"
 
 # rsync-style one-liner: SSH-bootstrap a remote receiver, then stream directly
+# (needs `atp` on the remote host; a per-transfer auth key is generated for you)
 atp send ./dataset user@receiver.example.com:/backups/dataset
 
 # Long-running receive daemon (accepts transfer after transfer)
@@ -138,10 +139,12 @@ matrix and nearly 2× faster on the *worst* links, which is exactly where a tran
 tool earns its keep. The authenticated tier (per-symbol HMAC vs rsync-over-ssh)
 tracks these results.
 
-The headline cell: **500 MB over a 10%-loss, 200 ms, 10 Mbit link — atp 564.8 s vs
-rsync 574.5 s**, with atp's *worst* rep beating rsync's *best* rep. Before the
-congestion-control campaign, atp timed out entirely on that cell (900 s+); TCP-based
-tools survive it only because TCP grinds; fountain coding wins it.
+The headline cell: **500 MB over a 10%-loss, 200 ms, 10 Mbit link**. When first won
+(ledger MATRIX-209), atp posted **564.8 s vs rsync's 574.5 s** with atp's *worst*
+rep beating rsync's *best* rep; the current-HEAD re-measure holds the win at 0.93.
+Before the congestion-control campaign, atp timed out entirely on that cell
+(900 s+); TCP-based tools survive it only because TCP grinds; fountain coding
+wins it.
 
 The one plaintext loss: the tiny-tree-on-perfect-link cell (2,000 small files on a
 1 Gbit/2 ms LAN), where rsync is ~8.6% faster and the result is within noise. That
@@ -158,7 +161,7 @@ Honestly mixed, reported in full:
 | tree (2,000 files), good | parity (1.00) |
 | 50 MB, perfect | rsync wins (1.48, noisy) |
 | 500 MB, perfect | rsync wins (1.47 — atp ~74 MB/s vs ssh ~108 MB/s) |
-| trees, perfect | rsync wins (1.2–2.5×) |
+| trees, perfect | rsync wins (~1.2–1.6×; an early 2.46× reading was a noisy-median artifact, per the ledger) |
 | bad / broken, large | currently gated by known issues (tracked in the ledger) |
 
 Encrypted good-regime geomean **0.70 (atp wins)**; perfect-regime **1.10 (rsync
@@ -169,11 +172,13 @@ is still the faster tool today; atp will tell you so rather than hide it.
 
 ### Memory footprint
 
-atp's receiver runs bounded: **≤ 18 MB RSS at every file size** (a 5 GB encrypted
-receive used to peak at 882 MB; it now runs at ~12 MB). The honest trade-off is on
-the *sender* during lossy-tier fountain coding: peak RSS can reach ~10× rsync's on
-2–10% loss cells — that memory is the forward-repair machinery that buys convergence
-where TCP tools stall.
+atp's receiver runs lean: a 5 GB encrypted receive that once peaked at 882 MB now
+runs at **~12 MB RSS**, and clean-path receivers sit in the single-digit-to-low-tens
+of megabytes (the stream path is hard-bounded by its 2 MiB receive window). On the
+lossy fountain cells receiver RSS stays in rsync's neighborhood (0.4–1.6×). The
+honest trade-off is on the *sender* during lossy-tier fountain coding: peak RSS can
+reach ~10× rsync's on 2–10% loss cells — that memory is the forward-repair machinery
+that buys convergence where TCP tools stall.
 
 ### The negative-evidence ledger
 
@@ -182,8 +187,9 @@ kept every one that *didn't*, with the mechanism of failure — so nobody re-cha
 them and so the numbers above have provenance. A sample of refuted hypotheses from
 the ledger:
 
-- Receipt-clocked flow-control credit — refuted **four times** (final attempt: 2×
-  payload re-sent, congestion collapse); settled with a written mechanism.
+- Receipt-clocked flow-control credit — refuted **four times** (the bare version
+  collapsed outright, re-sending 2× the payload; the final attempt measured a
+  wash); settled with a written mechanism.
 - "Receiver ACKs too slowly (~30 ms)" — refuted by direct measurement (ACKs flow
   every ~1.3 ms; the latency was repair-episode smearing).
 - BDP-based in-flight caps — refuted twice (the transport's RTT estimator was being
@@ -274,7 +280,9 @@ For re-syncing changed files, atp uses a two-level delta codec:
 
 Reconstructed chunks are re-verified against the manifest hash, so even a
 strong-checksum collision cannot commit wrong bytes. Delta is on by default for
-re-syncs; `--no-delta` forces whole-object transfer.
+re-syncs; `--no-delta` forces whole-object transfer. The receiver keeps its delta
+state in a `.asupersync-atp-delta-v1` directory inside the destination — that
+hidden directory is expected, and safe to delete if you never re-sync.
 
 ---
 
@@ -387,7 +395,7 @@ ssh, then streams over the chosen transport).
 --bwlimit BYTES_PER_SEC        Hard pacing cap (quic/auto transports)
 --max-bytes N                  Transfer size ceiling (default 4 GiB — raise for bigger)
 --workers N                    Parallel workers (default 4)
---symbol-size N                RaptorQ symbol size (default 1400; QUIC requires ≤1144, see below)
+--symbol-size N                RaptorQ symbol size (default: 1400 on rq; auto-sized to fit a QUIC datagram on quic)
 --repair-overhead X            Proactive repair factor (e.g. 1.1 = +10% repair symbols)
 --rq-round0-loss-pct P         Size round-0 repair for an expected loss rate
 --streams N                    UDP fan-out sockets for the symbol spray
@@ -406,7 +414,8 @@ the persistent daemon-style form of the same thing.
 --once                         Exit after one transfer (recv)
 --server-cert PATH --server-key PATH   QUIC: TLS certificate + key to present
 --rq-auth-key-hex HEX          Per-symbol auth key (must match sender)
---max-bytes N / --workers N / --symbol-size N   As on the sender (symbol size must match)
+--max-bytes N / --workers N / --symbol-size N   As on the sender (symbol size must match —
+                               automatic when neither end sets it: the defaults agree per transport)
 ```
 
 Note on ports: the receiver's delta-planning sidecar listens on **listen-port + 1**
@@ -425,21 +434,19 @@ Print a fresh 32-byte symbol-authentication key as hex. Share it with both ends
 # Receiver: present a TLS certificate (any serverAuth-EKU leaf works — e.g. step-ca,
 # mkcert, or your internal CA)
 atp recv ./inbox --listen 0.0.0.0:8472 --transport quic --once \
-  --symbol-size 1144 \
   --server-cert cert.pem --server-key key.pem
 
 # Sender: verify that certificate — fail-closed, no skip-verify option
 atp send ./dataset receiver.example.com:8472 --transport quic \
-  --symbol-size 1144 \
   --ca ca.pem --server-name receiver.example.com
 ```
 
-Two things to know: `--symbol-size ≤ 1144` is **required** on QUIC (the default
-1400 doesn't fit a 1200-byte datagram once the 56-byte symbol envelope is added —
-atp fails closed with a message saying exactly that), and no `--rq-auth-key-hex`
-is needed: on direct QUIC the per-symbol key is ignored because QUIC's AEAD
-already authenticates every symbol datagram. `--ca` can be omitted when the
-receiver's certificate chains to a system trust root.
+That's the whole invocation. Symbol sizing is automatic per transport (QUIC picks
+the largest symbol that fits one datagram; an explicitly oversized `--symbol-size`
+still fails closed with a clear error). No `--rq-auth-key-hex` is needed — QUIC's
+TLS 1.3 AEAD already authenticates every symbol datagram, and atp prints a notice
+if you pass one anyway. `--ca` can be omitted when the receiver's certificate
+chains to a system trust root.
 
 ---
 
@@ -448,12 +455,13 @@ receiver's certificate chains to a system trust root.
 Honesty section — read before deploying:
 
 - **Encrypted clean-large is rsync's turf today.** On pristine gigabit links moving
-  huge single files, rsync-over-ssh beats atp's QUIC tier by ~1.5× (and ~2.5× on
-  big trees). This is a known architectural frontier (userspace QUIC vs kernel TCP)
+  huge single files, rsync-over-ssh beats atp's QUIC tier by ~1.5× (and ~1.3–1.6×
+  on big trees). This is a known architectural frontier (userspace QUIC vs kernel TCP)
   with active work; the plaintext/authenticated tiers do not have this gap.
 - **Sender memory on lossy links.** The fountain encoder's forward-repair state can
-  peak at ~10× rsync's RSS on 2–10% loss cells. Receiver memory stays bounded
-  (≤ 18 MB). If your sender is memory-starved *and* your link is lossy, budget for it.
+  peak at ~10× rsync's RSS on 2–10% loss cells. Receiver memory stays low (~12 MB
+  even on a 5 GB receive). If your sender is memory-starved *and* your link is
+  lossy, budget for it.
 - **Linux is the primary platform.** The benchmark matrix and production hardening
   are Linux (epoll/io_uring). macOS builds and runs (kqueue) but has not been through
   the same benchmark gauntlet. No Windows support.
@@ -474,12 +482,13 @@ Honesty section — read before deploying:
 
 ## Troubleshooting
 
-### "direct rq transfers require symbol authentication"
+### "RQ transport requires symbol authentication"
 
 The RaptorQ/UDP transport refuses to run unauthenticated unless you explicitly opt
 into the lab tier. Either share a key (`atp rq-keygen` → `--rq-auth-key-hex` on both
-ends) or — on a trusted lab link only — pass `--rq-allow-unauthenticated-lab` on
-both ends.
+ends), use the `user@host:/path` SSH bootstrap (atp generates a per-transfer key for
+you over the ssh channel), or — on a trusted lab link only — pass
+`--rq-allow-unauthenticated-lab` on both ends.
 
 ### QUIC handshake fails with a certificate error
 
@@ -489,16 +498,18 @@ that signed the receiver's `--server-cert` (or that the cert chains to a system
 trust root), and that `--server-name` matches a SAN in that certificate
 (`--server-name` defaults to the target host).
 
-### "object size exceeds limit" / transfer rejected at 4 GiB
+### "transfer exceeds maximum size (N > 4294967296 bytes)"
 
 Raise `--max-bytes` on **both** ends (e.g. `--max-bytes 6442450944` for a 6 GiB
 ceiling). The default is a fail-closed guard, not a hard capability limit.
 
-### "max_datagram_size (1200) must be at least symbol_size (1400) + the 56-byte authenticated envelope header"
+### "max_datagram_size (1200) must be at least symbol_size (…) + the 56-byte authenticated envelope header"
 
 The QUIC transport carries one symbol per 1200-byte datagram, and each symbol
-wears a 56-byte envelope — so the default `--symbol-size 1400` cannot fit. Pass
-`--symbol-size 1144` or smaller **on both ends** for `--transport quic`.
+wears a 56-byte envelope. Since v0.3.7 the QUIC symbol size is chosen
+automatically, so this error only appears when you **explicitly** pass
+`--symbol-size` larger than 1144 with `--transport quic` — drop the flag (or use
+≤ 1144 on both ends). On older releases the flag was required; upgrade instead.
 
 ### Transfers are slow in a debug build
 
@@ -555,8 +566,8 @@ but isn't wired into the CLI yet; today you need a reachable address or ssh.
 ### Why does the sender use more memory than rsync on lossy links?
 
 That memory *is* the product: outstanding fountain-repair state that lets atp
-converge (and win) at 10% loss where single-stream TCP grinds. Receiver memory is
-bounded at ~18 MB regardless of file size.
+converge (and win) at 10% loss where single-stream TCP grinds. Receiver memory
+stays low (~12 MB even on a 5 GB receive).
 
 ### Where do I file bugs?
 
