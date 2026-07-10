@@ -122,17 +122,22 @@ run unauthenticated unless BOTH ends explicitly opt into the lab tier.
 ## Canonical Invocations
 
 ```bash
-KEY=$(atp rq-keygen)                                   # once; or ATP_RQ_AUTH_KEY_HEX
-atp recv ./inbox --listen 0.0.0.0:8472 --transport rq --once --rq-auth-key-hex "$KEY"
-atp send ./dataset host:8472 --transport rq --rq-auth-key-hex "$KEY"
-
-# Encrypted (QUIC + TLS 1.3, fail-closed cert verification, no --insecure exists)
+# Encrypted fountain tier (quic — the policy default; certs per OPERATIONS.md)
 atp recv ./inbox --listen 0.0.0.0:8472 --transport quic --once \
   --server-cert cert.pem --server-key key.pem
 atp send ./dataset receiver.example.com:8472 --transport quic \
   --ca ca.pem --server-name receiver.example.com
 
-atp send ./dataset user@host:/backups/dataset          # ssh-bootstrap one-liner
+# Authenticated fountain tier (rq — the fallback; one shared key, no certs)
+KEY=$(atp rq-keygen)                                   # once; or ATP_RQ_AUTH_KEY_HEX
+atp recv ./inbox --listen 0.0.0.0:8472 --transport rq --once --rq-auth-key-hex "$KEY"
+atp send ./dataset host:8472 --transport rq --rq-auth-key-hex "$KEY"
+
+# ssh-bootstrap one-liner — say --transport rq explicitly: the CLI default is
+# tcp, which violates the policy; rq bootstrap auto-generates a per-transfer
+# key (quic bootstrap works too once the peer has certs — see the profile)
+atp send ./dataset user@host:/backups/dataset --transport rq
+
 atp serve ./inbox --transport rq --rq-auth-key-hex "$KEY"   # persistent daemon
 atp send ./dataset host:8472 --dry-run                 # plan JSON, sends nothing
 ```
