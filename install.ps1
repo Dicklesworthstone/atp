@@ -196,9 +196,23 @@ function Get-AtpRemoteText {
     $oldProgress = $ProgressPreference
     $ProgressPreference = "SilentlyContinue"
     try {
-        return [string](Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers @{
+        $raw = (Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers @{
             "User-Agent" = "atp-install.ps1"
         }).Content
+        # GitHub serves extensionless release assets (e.g. SHA256SUMS) as
+        # application/octet-stream, so Invoke-WebRequest hands back .Content as a
+        # Byte[]. A plain [string] cast would stringify the byte VALUES ("88 97
+        # ...") instead of the text, and every manifest row would fail to parse.
+        # Decode the bytes as UTF-8 (stripping a leading BOM if present); pass
+        # genuine strings (text content-types) through unchanged.
+        if ($raw -is [byte[]]) {
+            $bytes = [byte[]]$raw
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+                $bytes = $bytes[3..($bytes.Length - 1)]
+            }
+            return [System.Text.Encoding]::UTF8.GetString($bytes)
+        }
+        return [string]$raw
     } finally {
         $ProgressPreference = $oldProgress
     }
