@@ -82,30 +82,10 @@ The seven-target release matrix beginning with v0.3.8 also includes macOS
 (Apple Silicon and Intel) and native Windows x64 (MSVC). These supported
 non-Linux targets have not been through the same benchmark gauntlet.
 
-Prebuilt releases v0.3.8 and newer require Minisign on `PATH`. `install.sh` and
-`install.ps1` verify the selected archive against `SHA256SUMS` and then
-authenticate its `<archive>.minisig` with ATP's embedded release key before
-extraction. Missing Minisign, missing signatures, checksum mismatches, and
-invalid signatures all fail closed. On macOS, install the supported verifier
-with `brew install minisign`; Windows requires `minisign.exe` on `PATH`.
-
-The only normal-install exception is for a canonical online release version
-strictly older than v0.3.8, especially the unsigned v0.3.7 release. When the
-signature endpoint is confirmed absent, the installer may proceed only after
-mandatory SHA-256 verification and must print `UNAUTHENTICATED LEGACY RELEASE`.
-This is integrity-only compatibility, not publisher authentication. A published
-legacy signature must still be verified; a bad signature, a missing verifier
-when a signature exists, an unknown/malformed version, or an inconclusive
-signature download fails closed.
-
-Offline installs require the signature beside the archive under its exact
-published name, for example `atp-x86_64-pc-windows-msvc.zip.minisig` or
-`atp-aarch64-apple-darwin.tar.gz.minisig`, plus the explicit/published SHA-256
-checksum. The legacy online exception never applies offline, regardless of the
-requested version. `--no-verify` on the Unix installer is a testing-only escape
-hatch, not a production installation mode. On Windows PowerShell 5.1, enable
-TLS 1.2 before fetching the installer:
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1)))
-```
+`install.sh` and `install.ps1` download the right prebuilt archive for the host
+and verify it against the release `SHA256SUMS` — automatically, with nothing to
+install first. Every release archive is also signed with Minisign; if `minisign`
+happens to be on `PATH` the installer verifies that signature too, but it is a
+best-effort bonus, never a requirement — no Minisign just means the install
+proceeds on the checksum. Offline installs work from a pre-downloaded archive
+plus its checksum.

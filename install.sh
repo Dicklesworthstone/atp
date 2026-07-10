@@ -21,7 +21,7 @@
 #                      artifacts unless --no-verify is used)
 #   --quiet            Suppress non-error output
 #   --no-gum           Disable gum formatting even if available
-#   --no-verify        Skip checksum and signature verification (for testing only)
+#   --no-verify        Skip checksum verification (for testing only)
 #   --force            Reinstall even if the same version is present
 #   --skill            Also install the atp agent skill (Claude/Codex) without asking
 #   --no-skill         Never prompt for / install the agent skill
@@ -164,7 +164,7 @@ Options:
   --checksum SHA256  Expected archive SHA-256 (offline/custom artifacts)
   --quiet            Suppress non-error output
   --no-gum           Disable gum formatting even if available
-  --no-verify        Skip checksum and signature verification (testing only)
+  --no-verify        Skip checksum verification (testing only)
   --force            Reinstall even if the same version is present
   --skill            Also install the atp agent skill (Claude/Codex) without asking
   --no-skill         Never prompt for / install the agent skill
@@ -631,31 +631,6 @@ is_commit_sha() {
   esac
 }
 
-is_legacy_unsigned_online_version() {
-  local value="$1"
-  case "$value" in
-    v*) value="${value#v}" ;;
-  esac
-
-  # Keep the unsigned exception deliberately narrow. Pre-release/build
-  # suffixes, missing components, leading zeroes, and any other malformed tag
-  # are treated as modern/unknown and therefore require authentication.
-  if [[ ! "$value" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-    return 1
-  fi
-
-  [ "${BASH_REMATCH[1]}" = "0" ] || return 1
-  case "${BASH_REMATCH[2]}" in
-    0|1|2) return 0 ;;
-    3)
-      case "${BASH_REMATCH[3]}" in
-        0|1|2|3|4|5|6|7) return 0 ;;
-      esac
-      ;;
-  esac
-  return 1
-}
-
 verify_checksum() {
   local file="$1"
 
@@ -732,73 +707,26 @@ verify_checksum() {
   return 0
 }
 
-# dsr-built releases beginning with v0.3.8 sign every asset with minisign.
-# Modern online releases and every verified offline install are fail-closed for
-# the verifier, signature sidecar, and signature verification. An online release
-# with a canonical version older than v0.3.8 may continue without a sidecar only
-# after SHA-256 verification and an explicit unauthenticated-legacy warning. If
-# any release publishes a signature, it must verify. The existing --no-verify
-# testing escape hatch is the only explicit bypass for both checks.
+# dsr-built releases sign every asset with minisign. Verification is
+# best-effort: skipped when minisign isn't installed or the release has no
+# signature (pre-dsr releases), but a PRESENT signature that fails to verify
+# aborts the install.
 MINISIGN_PUBKEY="RWTQGPeLsnm9G7VFdFWkkcRi3wJK/PqsYxWC+oLNN74W9IjBxRU1Xu70"
 
 verify_minisign() {
   local file="$1"
 
   [ "$NO_CHECKSUM" -eq 1 ] && return 0
-
-  local sig_file signature_source sig_status
-  sig_file="$TMP/$(basename "$file").minisig"
-  if [ -n "$OFFLINE_TARBALL" ]; then
-    signature_source="${OFFLINE_TARBALL}.minisig"
-    if [ ! -f "$signature_source" ] || [ -L "$signature_source" ]; then
-      err "Required offline minisign signature not found as a regular file: $signature_source"
-      err "Refusing an unauthenticated offline release install"
-      rm -f "$file" "$sig_file"
-      return 1
-    fi
-    if ! cp "$signature_source" "$sig_file"; then
-      err "Could not stage offline minisign signature: $signature_source"
-      rm -f "$file" "$sig_file"
-      return 1
-    fi
-  elif [ -n "$URL" ]; then
-    sig_status=""
-    if sig_status=$(curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
-        --max-time 30 -o "$sig_file" -w '%{http_code}' "${URL}.minisig" 2>/dev/null); then
-      if [ "$sig_status" != "200" ]; then
-        err "Unexpected HTTP status while downloading the minisign signature for $TAR: $sig_status"
-        rm -f "$file" "$sig_file"
-        return 1
-      fi
-    else
-      rm -f "$sig_file"
-      if [ "$sig_status" = "404" ] && is_legacy_unsigned_online_version "$VERSION"; then
-        warn "UNAUTHENTICATED LEGACY RELEASE: ${VERSION} predates mandatory Minisign signatures (v0.3.8)."
-        warn "SHA-256 verified archive integrity, but publisher authenticity was NOT verified because no .minisig is published."
-        warn "Upgrade to v0.3.8 or newer for authenticated release installs."
-        return 0
-      fi
-
-      if [ "$sig_status" = "404" ]; then
-        err "Required minisign signature is not published for $TAR"
-      else
-        err "Could not safely retrieve the required minisign signature for $TAR (HTTP ${sig_status:-unknown})"
-      fi
-      err "Only canonical online releases older than v0.3.8 may use the checksum-only legacy exception"
-      err "Refusing an unauthenticated online release install"
-      rm -f "$file"
-      return 1
-    fi
-  else
-    err "No release signature source is available for $TAR"
-    return 1
+  [ -z "$URL" ] && return 0
+  if ! command -v minisign >/dev/null 2>&1; then
+    return 0
   fi
 
-  if ! command -v minisign >/dev/null 2>&1; then
-    err "minisign is required to authenticate prebuilt release installs"
-    err "Install minisign and retry (macOS: brew install minisign)"
-    rm -f "$file" "$sig_file"
-    return 1
+  local sig_file
+  sig_file="$TMP/$(basename "$file").minisig"
+  if ! curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "${URL}.minisig" -o "$sig_file" 2>/dev/null; then
+    info "No minisign signature published for $TAR; relying on SHA-256 verification"
+    return 0
   fi
 
   if minisign -Vm "$file" -x "$sig_file" -P "$MINISIGN_PUBKEY" >/dev/null 2>&1; then
@@ -1150,7 +1078,6 @@ else
     info "Installing from offline tarball: $OFFLINE_TARBALL"
     cp "$OFFLINE_TARBALL" "$TMP/$TAR"
     verify_checksum "$TMP/$TAR" || exit 1
-    verify_minisign "$TMP/$TAR" || exit 1
     extract_atp_archive "$TMP/$TAR" || exit 1
   elif [ "$FROM_SOURCE" -eq 1 ]; then
     build_from_source

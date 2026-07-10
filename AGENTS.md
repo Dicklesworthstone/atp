@@ -87,9 +87,11 @@ dsr doctor
 dsr health check trj --no-cache
 dsr health check mmini --no-cache
 dsr health check wlap --no-cache
+# minisign on trj/mmini is optional — it only enables the best-effort signature
+# check during the Linux/macOS installer E2E. The Windows installer does not use
+# minisign at all, so wlap needs nothing here.
 ssh trj 'command -v minisign >/dev/null'
 ssh mmini 'test "$(command -v minisign)" = /opt/homebrew/bin/minisign && minisign -v'
-wlap_ps powershell.exe "Get-Command minisign.exe -CommandType Application -ErrorAction Stop | Out-Null"
 yq -e '.act_job_map == null and (.targets | length == 7)' \
   "$DSR_CONFIG_DIR/repos.d/atp.yaml"
 assert_actions_disabled
@@ -282,17 +284,17 @@ for name in "${EXPECTED_ARCHIVES[@]}"; do
   dsr signing verify "$archive"
 done
 
-# Still before tagging, exercise the signed Windows archive itself and perform
+# Still before tagging, exercise the built Windows archive itself and perform
 # real offline installs under Windows PowerShell 5.1 and PowerShell 7. The
-# installer must discover minisign.exe, verify the sibling signature, run the
-# installed binary, and leave bytes identical to the ZIP member.
+# installer must run the installed binary and leave bytes identical to the ZIP
+# member. Signature verification is best-effort and not required on Windows.
 WIN_GATE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WIN_STAGE="C:/atp-release-gate/$TAG-$WIN_GATE_ID"
 WIN_STAGE_PS="C:\\atp-release-gate\\$TAG-$WIN_GATE_ID"
 WIN_ZIP="atp-x86_64-pc-windows-msvc.zip"
 WIN_SHA=$(sha256sum "$ART/$WIN_ZIP" | awk '{print $1}')
-wlap_ps powershell.exe "New-Item -ItemType Directory -Path '$WIN_STAGE_PS' -ErrorAction Stop | Out-Null; Get-Command minisign.exe -CommandType Application -ErrorAction Stop | Out-Null"
-scp "$ART/$WIN_ZIP" "$ART/$WIN_ZIP.minisig" "wlap:$WIN_STAGE/"
+wlap_ps powershell.exe "New-Item -ItemType Directory -Path '$WIN_STAGE_PS' -ErrorAction Stop | Out-Null"
+scp "$ART/$WIN_ZIP" "wlap:$WIN_STAGE/"
 wlap_ps powershell.exe "
   \$copied=(Get-FileHash -LiteralPath '$WIN_STAGE_PS\\$WIN_ZIP' -Algorithm SHA256).Hash.ToLowerInvariant()
   if (\$copied -cne '$WIN_SHA') { throw 'copied Windows archive hash mismatch' }
@@ -302,10 +304,8 @@ wlap_ps powershell.exe "
 "
 WIN_PS51_OUTPUT=$(wlap_ps powershell.exe "& 'C:\\Users\\jeffr\\atp_dsr_git\\install.ps1' -Offline '$WIN_STAGE_PS\\$WIN_ZIP' -Checksum '$WIN_SHA' -Version '$TAG' -Dest '$WIN_STAGE_PS\\install-ps51' -Verify -Force" | tr -d '\r')
 printf '%s\n' "$WIN_PS51_OUTPUT"
-printf '%s\n' "$WIN_PS51_OUTPUT" | grep -F 'minisign signature verified'
 WIN_PWSH7_OUTPUT=$(wlap_ps pwsh.exe "& 'C:\\Users\\jeffr\\atp_dsr_git\\install.ps1' -Offline '$WIN_STAGE_PS\\$WIN_ZIP' -Checksum '$WIN_SHA' -Version '$TAG' -Dest '$WIN_STAGE_PS\\install-pwsh7' -Verify -Force" | tr -d '\r')
 printf '%s\n' "$WIN_PWSH7_OUTPUT"
-printf '%s\n' "$WIN_PWSH7_OUTPUT" | grep -F 'minisign signature verified'
 wlap_ps powershell.exe "\$raw=(Get-FileHash -LiteralPath '$WIN_STAGE_PS\\raw\\atp.exe' -Algorithm SHA256).Hash; foreach(\$installed in @('$WIN_STAGE_PS\\install-ps51\\atp.exe','$WIN_STAGE_PS\\install-pwsh7\\atp.exe')) { if ((Get-FileHash -LiteralPath \$installed -Algorithm SHA256).Hash -cne \$raw) { throw ('installed hash mismatch: '+\$installed) }; if ((& \$installed --version) -cne 'atp $VERSION') { throw ('installed version mismatch: '+\$installed) }; if ((& \$installed rq-keygen) -notmatch '^[0-9a-f]{64}$') { throw ('installed rq-keygen mismatch: '+\$installed) } }"
 
 # 6. Reconfirm that both workflows are disabled, then tag exactly the manifest
@@ -399,8 +399,10 @@ test "$(gh run list --repo Dicklesworthstone/atp --branch "$TAG" \
   --limit 100 --json databaseId --jq 'length')" -eq 0
 
 # 9. Use the immutable tagged installers online on every supported host/shell.
-#    Each install must report real Minisign verification and leave executable
-#    bytes identical to the corresponding member of the published archive.
+#    Each install must leave executable bytes identical to the corresponding
+#    member of the published archive. Signature verification is best-effort:
+#    Linux/macOS print the marker because those hosts happen to have minisign,
+#    Windows does not verify at all — none of it is required to install.
 LINUX_MEMBER_DIR=$(mktemp -d)
 MAC_MEMBER_DIR=$(mktemp -d)
 WIN_MEMBER_DIR=$(mktemp -d)
@@ -416,12 +418,13 @@ set -euo pipefail
 tag="$1"
 version="$2"
 expected_sha="$3"
-command -v minisign >/dev/null
 output=$(curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/atp/$tag/install.sh" |
   /bin/bash -s -- --version "$tag" --dest "$HOME/.local/bin" --verify --force \
     --no-skill --no-gum 2>&1)
 printf '%s\n' "$output"
-printf '%s\n' "$output" | grep -F 'minisign signature verified'
+# Best-effort: trj has minisign so the signature is verified; a host without it
+# would silently skip this line — never a failure.
+printf '%s\n' "$output" | grep -F 'minisign signature verified' || true
 installed="$HOME/.local/bin/atp"
 test "$(sha256sum "$installed" | awk '{print $1}')" = "$expected_sha"
 test "$("$installed" --version)" = "atp $version"
@@ -434,13 +437,12 @@ set -euo pipefail
 tag="$1"
 version="$2"
 expected_sha="$3"
-test "$(command -v minisign)" = /opt/homebrew/bin/minisign
-test "$(minisign -v 2>&1 | head -n 1)" = 'minisign 0.12'
 output=$(curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/atp/$tag/install.sh" |
   /bin/bash -s -- --version "$tag" --dest "$HOME/.local/bin" --verify --force \
     --no-skill --no-gum 2>&1)
 printf '%s\n' "$output"
-printf '%s\n' "$output" | grep -F 'minisign signature verified'
+# Best-effort: mmini has minisign so the signature is verified; skipped otherwise.
+printf '%s\n' "$output" | grep -F 'minisign signature verified' || true
 installed="$HOME/.local/bin/atp"
 test "$(shasum -a 256 "$installed" | awk '{print $1}')" = "$expected_sha"
 test "$("$installed" --version)" = "atp $version"
@@ -453,7 +455,6 @@ for engine in powershell.exe pwsh.exe; do
     \$ErrorActionPreference = 'Stop'
     [Net.ServicePointManager]::SecurityProtocol =
       [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Get-Command minisign.exe -CommandType Application -ErrorAction Stop | Out-Null
     \$installerContent = [string](Invoke-RestMethod -Uri \
       'https://raw.githubusercontent.com/Dicklesworthstone/atp/$TAG/install.ps1' \
       -TimeoutSec 30 -Headers @{ 'User-Agent' = 'atp-release-gate' })
@@ -467,7 +468,6 @@ for engine in powershell.exe pwsh.exe; do
   "
   WIN_INSTALL_OUTPUT=$(wlap_ps "$engine" "$WIN_INSTALL_SCRIPT" | tr -d '\r')
   printf '%s\n' "$WIN_INSTALL_OUTPUT"
-  printf '%s\n' "$WIN_INSTALL_OUTPUT" | grep -F 'minisign signature verified'
 done
 
 assert_actions_disabled
@@ -511,18 +511,19 @@ Notes:
   contract, and this direct DSR path does not create GitHub build-provenance
   attestations. Do not claim either without a separately configured and
   verified publication step.
-- Installer authentication is mandatory for every v0.3.8+ online release and
-  every verified offline install. Only a canonical online version below v0.3.8
-  may continue after a confirmed missing signature, mandatory SHA-256, and the
-  explicit `UNAUTHENTICATED LEGACY RELEASE` warning. A signature that exists
-  must verify even for legacy releases; malformed/unknown versions and
-  inconclusive signature fetches remain fail-closed.
+- Installer signature verification is best-effort, never required. Every release
+  archive is signed with Minisign and the `.minisig` sidecars are published, but
+  `install.sh`/`install.ps1` verify a signature only when `minisign` is already
+  on the user's `PATH`; a missing verifier is not an error and prints no scary
+  warning — the install proceeds on the published SHA-256 checksum. A signature
+  that IS present and fails to verify still aborts (genuine-tamper protection).
+  Never gate an install on the user having Minisign: keep atp trivially
+  installable by anyone.
 - After publication, use the exact assets already downloaded from the verified
   draft, install the tagged release with `install.sh` on Linux/macOS and
-  `install.ps1` under both Windows PowerShell 5.1 and PowerShell 7, require the
-  deterministic `minisign signature verified` marker, compare every installed
-  executable to its published archive member, then reconfirm both workflows
-  remain `disabled_manually` and no Actions run was created for the tag.
+  `install.ps1` under both Windows PowerShell 5.1 and PowerShell 7, compare every
+  installed executable to its published archive member, then reconfirm both
+  workflows remain `disabled_manually` and no Actions run was created for the tag.
 
 ## Testing the Installer
 

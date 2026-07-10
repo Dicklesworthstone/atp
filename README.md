@@ -19,11 +19,7 @@ instead of a retransmit stall. Every transfer is SHA-256 verified end-to-end and
 
 <h3>Quick Install</h3>
 
-**Prebuilt releases v0.3.8 and newer require
-[Minisign](https://jedisct1.github.io/minisign/) on `PATH` so the archive can be
-authenticated with ATP's embedded key. The unsigned v0.3.7 release is a
-narrow legacy exception: online installs still require SHA-256, print a prominent
-unauthenticated-release warning, and do not claim publisher authenticity.**
+One command, nothing else to install first:
 
 ```bash
 # Linux / macOS
@@ -32,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ```powershell
 # Windows (PowerShell 5.1+)
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1)))
+irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
 ```
 
 </div>
@@ -393,30 +389,7 @@ Details that matter (from the
 
 ### Quick install (recommended)
 
-For releases v0.3.8 and newer, prebuilt installs are fail-closed: install
-[Minisign](https://jedisct1.github.io/minisign/) first and ensure `minisign`
-(or `minisign.exe` on Windows) is on `PATH`. The installer requires both the
-published SHA-256 checksum and a valid `<archive>.minisig`; a missing tool,
-sidecar, or valid signature aborts the install.
-
-There is one compatibility exception for older online releases. A canonical
-release version strictly below v0.3.8, including the unsigned v0.3.7,
-may install when its `.minisig` is confirmed absent, but only after mandatory
-SHA-256 verification and a prominent **UNAUTHENTICATED LEGACY RELEASE** warning.
-That checksum detects accidental corruption against the published checksum; it
-does not authenticate the publisher. If any legacy release does publish a
-signature, the installer requires Minisign and verifies it instead of taking the
-exception. Unknown or malformed versions never qualify. Offline installs never
-qualify either: every verified offline archive, regardless of version, requires
-its sibling signature and Minisign verification.
-
-```bash
-# Ubuntu / Debian
-sudo apt-get update && sudo apt-get install -y minisign
-
-# macOS
-brew install minisign
-```
+Installing atp takes one command and needs nothing else installed first.
 
 ```bash
 # Linux / macOS
@@ -425,19 +398,23 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ```powershell
 # Windows (PowerShell 5.1+)
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1)))
+irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
 
 # Add the install directory to your User PATH and run the post-install self-test
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1))) -EasyMode -Verify
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1))) -EasyMode -Verify
 ```
 
 The installer detects your platform, downloads the right prebuilt binary from the
-latest GitHub release, requires its SHA-256 to match the published `SHA256SUMS`,
-applies the signature policy above, and installs to `~/.local/bin` on Linux/macOS or
-`%USERPROFILE%\.local\bin` on Windows. The PowerShell installer supports native
-Windows x64 on PowerShell 5.1+. Offline installs require the signed release
-archive, its sibling `<archive>.minisig`, and either an explicit checksum or the
-published checksum file. Useful variants:
+latest GitHub release, checks its SHA-256 against the published `SHA256SUMS`, and
+installs to `~/.local/bin` on Linux/macOS or `%USERPROFILE%\.local\bin` on
+Windows. The PowerShell installer supports native Windows x64 on PowerShell 5.1+.
+
+Every release archive is also signed with
+[Minisign](https://jedisct1.github.io/minisign/). If you already have `minisign`
+on your `PATH`, the installer verifies that signature too; if you don't, it just
+installs — the signature check is an optional bonus, never a requirement.
+Offline installs work from a pre-downloaded archive plus its checksum. Useful
+variants:
 
 ```bash
 # Auto-add ~/.local/bin to your PATH
@@ -452,10 +429,9 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 # Build from the pinned source instead of downloading a binary
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --from-source
 
-# Air-gapped: install a pre-downloaded signed release tarball.
-# On a connected machine, download install.sh, the tarball, the matching
-# <tarball>.minisig sidecar, and SHA256SUMS. Transfer all four files together;
-# keep the signature beside the archive under its published name.
+# Air-gapped: install a pre-downloaded release tarball.
+# On a connected machine, download install.sh, the tarball, and SHA256SUMS,
+# then transfer all three together.
 ARCHIVE=./atp-x86_64-unknown-linux-musl.tar.gz
 ARCHIVE_SHA256=$(awk -v name="$(basename "$ARCHIVE")" '$2 == name { print $1 }' SHA256SUMS)
 bash install.sh --offline "$ARCHIVE" --checksum "$ARCHIVE_SHA256"
@@ -468,11 +444,10 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 
 ### Prebuilt binaries
 
-Beginning with v0.3.8, the hardened release gate on `main` requires all seven release
-archives below plus `SHA256SUMS` before publishing. The v0.3.7 release predates
-that gate and ships five (no aarch64 musl or Windows archive yet; the installer
-automatically falls back to the aarch64 glibc build). Older releases may have a
-smaller platform set:
+Beginning with v0.3.8, releases ship all seven archives below plus `SHA256SUMS`.
+The v0.3.7 release ships five (no aarch64 musl or Windows archive yet; the
+installer automatically falls back to the aarch64 glibc build). Older releases
+may have a smaller platform set:
 
 | Platform | Artifact |
 |----------|----------|
