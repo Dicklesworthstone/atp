@@ -3,7 +3,8 @@ name: atp
 description: >-
   Run, debug, and tune atp transfers (fountain-coded rsync alternative). Use
   when sending files with atp, choosing --transport or security tiers,
-  reading transfer JSON reports, or benchmarking vs rsync.
+  reading transfer JSON reports, benchmarking vs rsync, or embedding atp as
+  a Rust library (asupersync crate).
 dependencies:
   - "atp release binary (install.sh) — debug builds are orders of magnitude slower at RaptorQ decode"
   - "Both ends run atp; explicit tuning flags must match on both ends"
@@ -23,6 +24,7 @@ dependencies:
 | Decode an error message | Failure→Fix table, then [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
 | Look up a flag's exact semantics | [CLI.md](references/CLI.md) |
 | Set up keys/certs, tune a lossy link, benchmark | [OPERATIONS.md](references/OPERATIONS.md) |
+| Embed transfer capability in a Rust project | [LIBRARY.md](references/LIBRARY.md) — atp is the `asupersync` crate's transfer subsystem |
 
 ## One Rule
 
@@ -143,6 +145,7 @@ More: [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md)
 | Full flag reference per subcommand, env vars, per-transport resolution | [CLI.md](references/CLI.md) |
 | Playbooks: keys/certs, ssh bootstrap, daemon, tuning, honest benchmarking | [OPERATIONS.md](references/OPERATIONS.md) |
 | Exact error strings → root cause → fix | [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
+| Library embedding (crate features, Cx runtime, module map) | [LIBRARY.md](references/LIBRARY.md) |
 | Where these claims come from (ledger, beads, commits) | [PROVENANCE.md](references/PROVENANCE.md) |
 
 Source of truth when this skill disagrees with reality: the asupersync

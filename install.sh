@@ -23,6 +23,9 @@
 #   --no-gum           Disable gum formatting even if available
 #   --no-verify        Skip checksum verification (for testing only)
 #   --force            Reinstall even if the same version is present
+#   --skill            Also install the atp agent skill (Claude/Codex) without asking
+#   --no-skill         Never prompt for / install the agent skill
+#   --uninstall-skill  Remove previously installed agent skill copies and exit
 #
 set -euo pipefail
 umask 022
@@ -48,6 +51,10 @@ FORCE_INSTALL=0
 OFFLINE_TARBALL=""
 CHECKSUM="${CHECKSUM:-}"
 ARTIFACT_URL="${ARTIFACT_URL:-}"
+SKILL_MODE=""            # ""=ask (interactive only) | yes | no
+UNINSTALL_SKILL=0
+SKILL_INSTALLED=0
+SKILL_MARKER=".installed-by-atp-installer"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Output helpers (gum with ANSI fallback)
@@ -159,8 +166,109 @@ Options:
   --no-gum           Disable gum formatting even if available
   --no-verify        Skip checksum verification (testing only)
   --force            Reinstall even if the same version is present
+  --skill            Also install the atp agent skill (Claude/Codex) without asking
+  --no-skill         Never prompt for / install the agent skill
+  --uninstall-skill  Remove previously installed agent skill copies and exit
   -h, --help         Show this help
 EOF
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent skill (Claude Code / Codex) install & removal
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_dest_roots() {
+  printf '%s\n' "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"
+}
+
+uninstall_skill_copies() {
+  local removed=0 root target
+  while IFS= read -r root; do
+    target="$root/atp"
+    if [ -d "$target" ]; then
+      if [ -f "$target/$SKILL_MARKER" ]; then
+        rm -rf "$target"
+        ok "Removed $target"
+        removed=1
+      else
+        warn "Skipping $target: not installed by this installer (no $SKILL_MARKER marker); remove manually if intended"
+      fi
+    fi
+  done < <(skill_dest_roots)
+  [ "$removed" -eq 1 ] || info "No installer-managed atp skill copies found."
+}
+
+locate_skill_source() {
+  # Fast path: running from a repo checkout with skills/atp alongside.
+  if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || here=""
+    if [ -n "$here" ] && [ -f "$here/skills/atp/SKILL.md" ]; then
+      echo "$here/skills/atp"
+      return 0
+    fi
+  fi
+  # Piped install (curl | bash): fetch the repo tarball — tiny, no Rust source.
+  [ -n "${TMP:-}" ] || return 1
+  local tarball="$TMP/skill-repo.tar.gz" root="$TMP/skill-repo"
+  curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
+    "https://codeload.github.com/${OWNER}/${REPO}/tar.gz/refs/heads/main" \
+    -o "$tarball" 2>/dev/null || return 1
+  mkdir -p "$root"
+  tar -xzf "$tarball" -C "$root" --strip-components=1 || return 1
+  [ -f "$root/skills/atp/SKILL.md" ] || return 1
+  echo "$root/skills/atp"
+}
+
+install_skill_copies() {
+  local src
+  if ! src=$(locate_skill_source) || [ -z "$src" ]; then
+    warn "Could not locate the atp skill source (offline?); skipping skill install"
+    warn "Add it later with: install.sh --skill"
+    return 0
+  fi
+  local root target
+  while IFS= read -r root; do
+    target="$root/atp"
+    if [ -d "$target" ] && [ ! -f "$target/$SKILL_MARKER" ] && [ "$FORCE_INSTALL" -eq 0 ]; then
+      warn "Skipping $target: exists but was not installed by this installer (--force overwrites)"
+      continue
+    fi
+    mkdir -p "$root"
+    rm -rf "$target"
+    cp -R "$src" "$target"
+    : > "$target/$SKILL_MARKER"
+    ok "Agent skill installed: $target"
+    SKILL_INSTALLED=1
+  done < <(skill_dest_roots)
+}
+
+maybe_install_skill() {
+  case "$SKILL_MODE" in
+    no) return 0 ;;
+    yes) install_skill_copies; return 0 ;;
+  esac
+  # Interactive prompt only. `curl | bash` keeps stdin for the script body,
+  # so ask via /dev/tty; when there is no terminal, stay silent but helpful.
+  [ "$QUIET" -eq 1 ] && return 0
+  if ! { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+    info "Tip: re-run with --skill to also install the atp agent skill (Claude Code / Codex)"
+    return 0
+  fi
+  local answer=""
+  if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+    if gum confirm "Install the atp agent skill for Claude Code / Codex (~/.claude/skills + ~/.codex/skills)?" \
+        < /dev/tty > /dev/tty 2>&1; then
+      answer="y"
+    fi
+  else
+    printf 'Install the atp agent skill for Claude Code / Codex (~/.claude/skills + ~/.codex/skills)? [y/N] ' > /dev/tty
+    IFS= read -r answer < /dev/tty || answer=""
+  fi
+  case "$answer" in
+    y|Y|yes|YES) install_skill_copies ;;
+    *) info "Skipped agent skill (add later with: install.sh --skill)" ;;
+  esac
 }
 
 require_option_value() {
@@ -190,10 +298,18 @@ while [ $# -gt 0 ]; do
     --no-gum) NO_GUM=1; shift ;;
     --no-verify) NO_CHECKSUM=1; shift ;;
     --force) FORCE_INSTALL=1; shift ;;
+    --skill) SKILL_MODE="yes"; shift ;;
+    --no-skill) SKILL_MODE="no"; shift ;;
+    --uninstall-skill) UNINSTALL_SKILL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "Unknown option: $1"; usage; exit 2 ;;
   esac
 done
+
+if [ "$UNINSTALL_SKILL" -eq 1 ]; then
+  uninstall_skill_copies
+  exit 0
+fi
 
 if [ -z "$DEST" ]; then
   if [ -z "${HOME:-}" ]; then
@@ -227,6 +343,14 @@ fi
 detect_platform() {
   OS=$(uname -s | tr 'A-Z' 'a-z')
   ARCH=$(uname -m)
+
+  case "$OS" in
+    mingw*|msys*|cygwin*)
+      err "Native Windows installs use install.ps1 (PowerShell 5.1 or newer)"
+      exit 2
+      ;;
+  esac
+
   case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
     arm64|aarch64) ARCH="aarch64" ;;
@@ -502,12 +626,20 @@ verify_checksum() {
     expected=$(awk '{print $1; exit}' "${OFFLINE_TARBALL}.sha256")
   fi
   if [ -z "$expected" ] && [ -n "$URL" ]; then
-    # Primary: SHA256SUMS from the same release
+    # Primary: SHA256SUMS from the same release (GitHub-Actions-era releases)
     if [ -n "$VERSION" ]; then
       local sums_url="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/SHA256SUMS"
       local sums_file="$TMP/SHA256SUMS"
       if curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "$sums_url" -o "$sums_file" 2>/dev/null; then
         expected=$(awk -v t="$TAR" '$2 == t {print $1}' "$sums_file" | head -1)
+      fi
+    fi
+    # dsr-built releases publish {tool}-{version}-checksums.sha256 instead
+    if [ -z "$expected" ] && [ -n "$VERSION" ]; then
+      local dsr_sums_url="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/atp-${VERSION}-checksums.sha256"
+      local dsr_sums_file="$TMP/dsr-checksums.sha256"
+      if curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "$dsr_sums_url" -o "$dsr_sums_file" 2>/dev/null; then
+        expected=$(awk -v t="$TAR" '$2 == t {print $1}' "$dsr_sums_file" | head -1)
       fi
     fi
     # Fallback: per-asset .sha256 file
@@ -554,6 +686,38 @@ verify_checksum() {
 
   ok "Checksum verified: ${actual:0:16}..."
   return 0
+}
+
+# dsr-built releases sign every asset with minisign. Verification is
+# best-effort: skipped when minisign isn't installed or the release has no
+# signature (pre-dsr releases), but a PRESENT signature that fails to verify
+# aborts the install.
+MINISIGN_PUBKEY="RWTQGPeLsnm9G7VFdFWkkcRi3wJK/PqsYxWC+oLNN74W9IjBxRU1Xu70"
+
+verify_minisign() {
+  local file="$1"
+
+  [ "$NO_CHECKSUM" -eq 1 ] && return 0
+  [ -z "$URL" ] && return 0
+  if ! command -v minisign >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local sig_file
+  sig_file="$TMP/$(basename "$file").minisig"
+  if ! curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "${URL}.minisig" -o "$sig_file" 2>/dev/null; then
+    info "No minisign signature published for $TAR; relying on SHA-256 verification"
+    return 0
+  fi
+
+  if minisign -Vm "$file" -x "$sig_file" -P "$MINISIGN_PUBKEY" >/dev/null 2>&1; then
+    ok "minisign signature verified"
+    return 0
+  fi
+  err "minisign signature verification FAILED for $TAR"
+  err "The downloaded file may be corrupted or tampered with."
+  rm -f "$file"
+  return 1
 }
 
 extract_atp_archive() {
@@ -913,6 +1077,7 @@ else
       build_from_source
     else
       verify_checksum "$TMP/$TAR" || exit 1
+      verify_minisign "$TMP/$TAR" || exit 1
       extract_atp_archive "$TMP/$TAR" || exit 1
     fi
   fi
@@ -926,6 +1091,7 @@ fi
 
 INSTALLED="$VALIDATED_VERSION_OUTPUT"
 configure_path
+maybe_install_skill
 
 # Final summary
 if [ "$QUIET" -eq 0 ]; then
@@ -947,6 +1113,10 @@ if [ "$QUIET" -eq 0 ]; then
     ""
     "Docs:      https://github.com/${OWNER}/${REPO}"
     "Uninstall: rm $DEST/$BIN_NAME"
+  )
+  [ "$SKILL_INSTALLED" -eq 1 ] && summary_lines+=(
+    "Skill:     ~/.claude/skills/atp + ~/.codex/skills/atp"
+    "           remove with: install.sh --uninstall-skill"
   )
   draw_box "0;32" "${summary_lines[@]}"
 fi
