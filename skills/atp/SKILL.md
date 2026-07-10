@@ -17,6 +17,7 @@ dependencies:
 
 | You need to… | Do |
 |--------------|----|
+| Install or update atp (either end) | Update section below — one-liner, safe to re-run, keeps both ends on the same version |
 | Send to a machine you've sent to before | `~/.config/atp/peers/<host>.md` — reuse the saved command verbatim; do NOT rediscover transport/certs/data-host |
 | Verify atp works in this environment | `scripts/smoke.sh` (real loopback transfer, exit 0 = healthy) |
 | Send/receive a file or tree | Canonical Invocations below — pick the row from Choose a Transport first |
@@ -58,6 +59,28 @@ convenience.
   copies of the skill share them.
 - Profiles carry no secrets: quic needs no symbol key (TLS AEAD covers it)
   and ssh bootstrap generates per-transfer rq keys; store only paths/flags.
+
+## Update / Install (do this when versions lag or differ)
+
+When `atp --version` on either end is older than this skill's boundary card
+— or the two ends differ — update BEFORE debugging flag or behavior
+mismatches; explicit tuning flags must match across the pair and defaults
+evolve. The installer is idempotent and safe to re-run:
+
+```bash
+# Linux / macOS (also fine over ssh for the remote end)
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 5.1+) — installer staged 2026-07-10; if the URL 404s,
+# Windows support hasn't landed on main yet (check the repo)
+irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | iex
+```
+
+Pin a version with `bash -s -- --version vX.Y.Z` / `-Version vX.Y.Z`;
+`--skill` also refreshes this skill. Verify after: `atp --version` +
+`scripts/smoke.sh`.
 
 ## Boundary Card (v0.3.7, 2026-07-10)
 

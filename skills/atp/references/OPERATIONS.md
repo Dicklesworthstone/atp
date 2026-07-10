@@ -78,4 +78,6 @@ Full spec + every result and refuted hypothesis: the asupersync repo's
 ## Platform notes
 
 Linux is the benchmarked, production-hardened platform (epoll/io_uring).
-macOS builds and runs (kqueue) without the same gauntlet. No Windows.
+macOS builds and runs (kqueue) without the same gauntlet. Windows support
+is landing (installer + release legs staged on main as of 2026-07-10; no
+Windows binaries in v0.3.7 or earlier).
