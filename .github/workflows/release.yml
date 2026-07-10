@@ -17,10 +17,12 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}-${{ inputs.tag || '' }}
+  # Key on the resolved version so a tag push and a manual dispatch of the same
+  # version serialize instead of racing to publish the same release.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -28,8 +30,78 @@ env:
   UPSTREAM_REPO: Dicklesworthstone/asupersync
 
 jobs:
+  prepare:
+    name: Resolve immutable release inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      upstream_rev: ${{ steps.release.outputs.upstream_rev }}
+    steps:
+      - name: Checkout release controller
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve tag, commit, and upstream pin
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          existing_sha="$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ -z "$existing_sha" ]; then
+              echo "Tag-push event did not resolve refs/tags/$tag" >&2
+              exit 1
+            fi
+            release_sha="$existing_sha"
+          elif [ -n "$existing_sha" ]; then
+            release_sha="$existing_sha"
+          else
+            if [ "$REF_NAME" != "main" ]; then
+              echo "A new release tag may only be created from main (got $REF_NAME)" >&2
+              exit 1
+            fi
+            release_sha="$EVENT_SHA"
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace immutable assets" >&2
+            exit 1
+          fi
+
+          upstream_rev="$(git show "$release_sha:UPSTREAM_REV" | tr -d '[:space:]')"
+          if [[ ! "$upstream_rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "UPSTREAM_REV at $release_sha must be one lowercase 40-hex commit SHA" >&2
+            exit 1
+          fi
+
+          {
+            echo "release_tag=$tag"
+            echo "release_sha=$release_sha"
+            echo "upstream_rev=$upstream_rev"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     strategy:
@@ -41,6 +113,8 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
@@ -48,43 +122,68 @@ jobs:
             target: x86_64-apple-darwin
     steps:
       - name: Checkout atp repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
 
       - name: Read upstream pin
         id: pin
+        env:
+          EXPECTED_REV: ${{ needs.prepare.outputs.upstream_rev }}
         run: |
           rev="$(tr -d '[:space:]' < UPSTREAM_REV)"
-          if [ -z "$rev" ]; then echo "UPSTREAM_REV is empty" >&2; exit 1; fi
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "UPSTREAM_REV must be one lowercase 40-hex commit SHA" >&2
+            exit 1
+          fi
+          if [ "$rev" != "$EXPECTED_REV" ]; then
+            echo "Resolved release pin changed between prepare and build" >&2
+            exit 1
+          fi
           echo "rev=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Checkout asupersync @ pinned rev
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.UPSTREAM_REPO }}
           ref: ${{ steps.pin.outputs.rev }}
           path: upstream
+          persist-credentials: false
+
+      - name: Verify immutable upstream pin is on main
+        env:
+          REV: ${{ steps.pin.outputs.rev }}
+        run: |
+          actual="$(git -C upstream rev-parse HEAD)"
+          if [ "$actual" != "$REV" ]; then
+            echo "Upstream checkout mismatch: expected $REV, got $actual" >&2
+            exit 1
+          fi
+          git -C upstream fetch --quiet --filter=blob:none origin main
+          if ! git -C upstream merge-base --is-ancestor "$REV" origin/main; then
+            echo "Pinned upstream commit $REV is not contained in origin/main" >&2
+            exit 1
+          fi
 
       - name: Guard — release tag must match the pinned crate version
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          want="${tag#v}"
+          want="${RELEASE_TAG#v}"
           have=$(grep -m1 '^version = "' upstream/Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
           if [ -z "$have" ]; then
             echo "Could not read package version from upstream/Cargo.toml" >&2; exit 1
           fi
           if [ "$want" != "$have" ]; then
-            echo "Release tag $tag does not match the pinned asupersync crate version $have." >&2
+            echo "Release tag $RELEASE_TAG does not match the pinned asupersync crate version $have." >&2
             echo "The atp binary would report 'atp $have'. Update UPSTREAM_REV or retag as v$have." >&2
             exit 1
           fi
-          echo "Tag $tag matches pinned crate version $have"
+          echo "Tag $RELEASE_TAG matches pinned crate version $have"
 
       - name: Install musl toolchain
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install pinned Rust toolchain
@@ -98,89 +197,135 @@ jobs:
         working-directory: upstream
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --locked --bin atp --features atp-cli --target ${{ matrix.target }}
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE/upstream=/build/asupersync --remap-path-prefix=$HOME/.cargo=/cargo"
+          cargo build --release --locked --bin atp --features atp-cli --target ${{ matrix.target }}
 
       - name: Package tarball
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           mkdir -p dist stage
-          cp "upstream/target/${{ matrix.target }}/release/atp" stage/atp
+          cp "upstream/target/$TARGET/release/atp" stage/atp
           strip stage/atp 2>/dev/null || true
           cp LICENSE stage/LICENSE
-          tar -C stage -czf "dist/atp-${{ matrix.target }}.tar.gz" atp LICENSE
-          cd dist
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "atp-${{ matrix.target }}.tar.gz" > "atp-${{ matrix.target }}.tar.gz.sha256"
-          else
-            shasum -a 256 "atp-${{ matrix.target }}.tar.gz" > "atp-${{ matrix.target }}.tar.gz.sha256"
-          fi
+          epoch="$(git -C upstream show -s --format=%ct HEAD)"
+          python3 - "$TARGET" "$epoch" <<'PY'
+          import gzip
+          import pathlib
+          import sys
+          import tarfile
+
+          target, epoch_text = sys.argv[1:]
+          epoch = int(epoch_text)
+          output = pathlib.Path("dist") / f"atp-{target}.tar.gz"
+          with output.open("wb") as raw:
+              with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                  with tarfile.open(fileobj=compressed, mode="w") as archive:
+                      for name, mode in (("atp", 0o755), ("LICENSE", 0o644)):
+                          path = pathlib.Path("stage") / name
+                          info = archive.gettarinfo(str(path), arcname=name)
+                          info.uid = info.gid = 0
+                          info.uname = info.gname = ""
+                          info.mode = mode
+                          info.mtime = epoch
+                          with path.open("rb") as source:
+                              archive.addfile(info, source)
+          PY
 
       - name: Smoke-test binary
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
-          ./stage/atp --version
+          expected="atp ${RELEASE_TAG#v}"
+          actual="$(./stage/atp --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Built binary version mismatch: expected '$expected', got '$actual'" >&2
+            exit 1
+          fi
           ./stage/atp rq-keygen >/dev/null
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: atp-${{ matrix.target }}
-          path: dist/*
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   release:
     name: Publish release
-    needs: build
-    # Publish whatever platform legs succeeded (fail-fast is off above); the
-    # "Assemble SHA256SUMS" step refuses to publish an empty release.
-    if: ${{ !cancelled() }}
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout atp repo
-        uses: actions/checkout@v4
-
-      - name: Read upstream pin
-        id: pin
-        run: echo "rev=$(tr -d '[:space:]' < UPSTREAM_REV)" >> "$GITHUB_OUTPUT"
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Assemble SHA256SUMS
-        id: sums
+      - name: Verify complete asset set and assemble SHA256SUMS
         run: |
           cd dist
           ls -la
-          if ! ls atp-*.tar.gz >/dev/null 2>&1; then
-            echo "No build artifacts present; refusing to publish an empty release" >&2
+          expected=(
+            atp-x86_64-unknown-linux-musl.tar.gz
+            atp-x86_64-unknown-linux-gnu.tar.gz
+            atp-aarch64-unknown-linux-musl.tar.gz
+            atp-aarch64-unknown-linux-gnu.tar.gz
+            atp-aarch64-apple-darwin.tar.gz
+            atp-x86_64-apple-darwin.tar.gz
+          )
+          shopt -s nullglob
+          actual=(atp-*.tar.gz)
+          if [ "${#actual[@]}" -ne "${#expected[@]}" ]; then
+            echo "Expected ${#expected[@]} release tarballs, found ${#actual[@]}" >&2
             exit 1
           fi
-          rm -f ./*.sha256
-          sha256sum atp-*.tar.gz > SHA256SUMS
+          for asset in "${expected[@]}"; do
+            if [ ! -f "$asset" ]; then
+              echo "Missing required release asset: $asset" >&2
+              exit 1
+            fi
+          done
+          sha256sum "${expected[@]}" > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: atp ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          target_commitish: ${{ needs.prepare.outputs.release_sha }}
+          name: atp ${{ needs.prepare.outputs.release_tag }}
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          make_latest: true
           body: |
             Standalone `atp` CLI binaries, built from the canonical
             [asupersync](https://github.com/Dicklesworthstone/asupersync) source at commit
-            [`${{ steps.pin.outputs.rev }}`](https://github.com/Dicklesworthstone/asupersync/commit/${{ steps.pin.outputs.rev }}).
+            [`${{ needs.prepare.outputs.upstream_rev }}`](https://github.com/Dicklesworthstone/asupersync/commit/${{ needs.prepare.outputs.upstream_rev }}).
 
-            Verify downloads against `SHA256SUMS`. Install with:
+            Verify downloads against `SHA256SUMS`, or verify the GitHub build
+            provenance with `gh attestation verify <asset> --repo Dicklesworthstone/atp`.
+            Install with:
 
             ```bash
             curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash

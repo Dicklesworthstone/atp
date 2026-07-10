@@ -51,8 +51,9 @@ asupersync `main`, then bump `UPSTREAM_REV` here.
 
 ## Release Process
 
-Releases publish prebuilt `atp` binaries for Linux (x86_64 musl+gnu, aarch64 gnu)
-and macOS (x86_64, aarch64), plus `SHA256SUMS`.
+Releases publish prebuilt `atp` binaries for Linux (x86_64 and aarch64, each as
+musl + gnu) and macOS (x86_64, aarch64) — six tarballs — plus `SHA256SUMS` and
+GitHub build-provenance attestations.
 
 ```bash
 # 1. Pick the asupersync commit to ship (must be pushed to origin/main there)
@@ -76,14 +77,19 @@ gh run watch <run-id> --repo Dicklesworthstone/atp --exit-status
 Notes:
 
 - The workflow checks out asupersync at `UPSTREAM_REV` and runs
-  `cargo build --release --locked --bin atp --features atp-cli` under the
-  nightly toolchain pinned by asupersync's `rust-toolchain.toml`.
+  `cargo build --release --locked --bin atp --features atp-cli`
+  (plus `--target <triple>` per matrix leg) under the nightly toolchain pinned
+  by asupersync's `rust-toolchain.toml`.
 - `--features atp-cli` is the full-featured binary — it already includes `tls`,
   which the encrypted QUIC/TLS-1.3 tier requires. Do not add feature flags
   without checking asupersync's `Cargo.toml`.
-- Matrix legs run with `fail-fast: false`; the release publishes whatever legs
-  succeeded. If a platform leg breaks, fix or drop it deliberately — never
-  publish a release with zero assets.
+- Matrix legs run with `fail-fast: false` so every platform reports its result,
+  but publication is fail-closed: all six declared tarballs must exist before a
+  release is created. A partial matrix is never promoted as `latest`.
+- Release inputs are immutable contracts: `UPSTREAM_REV` is a lowercase 40-hex
+  commit on upstream `main`, the release tag resolves to one exact atp-repo
+  commit, existing releases are not overwritten, and published assets receive
+  GitHub build-provenance attestations.
 - Keep tag versions in lockstep with the `atp --version` output of the pinned
   rev; if they drift, say so in the release notes.
 
@@ -92,6 +98,7 @@ Notes:
 ```bash
 bash -n install.sh                       # syntax
 shellcheck -S warning install.sh         # lint
+bash scripts/test-install.sh             # deterministic local installer contracts
 bash install.sh --no-gum --dest /tmp/atp-test-bin --verify   # real install
 bash install.sh --quiet --dest /tmp/atp-test-bin --force     # quiet path
 ```

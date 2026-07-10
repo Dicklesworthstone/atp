@@ -1,0 +1,57 @@
+name: Distribution checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate shell scripts
+        run: |
+          bash -n install.sh scripts/build-atp.sh scripts/test-install.sh
+          shellcheck -S warning install.sh scripts/build-atp.sh scripts/test-install.sh
+
+      - name: Run installer contract tests
+        run: bash scripts/test-install.sh
+
+      - name: Validate immutable upstream pin
+        env:
+          UPSTREAM_REPO: https://github.com/Dicklesworthstone/asupersync
+        run: |
+          rev="$(tr -d '[:space:]' < UPSTREAM_REV)"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "UPSTREAM_REV must be one lowercase 40-hex commit SHA" >&2
+            exit 1
+          fi
+          git init -q "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" remote add origin "$UPSTREAM_REPO"
+          git -C "$RUNNER_TEMP/upstream" fetch -q --depth 1 origin "$rev"
+          actual="$(git -C "$RUNNER_TEMP/upstream" rev-parse FETCH_HEAD)"
+          if [ "$actual" != "$rev" ]; then
+            echo "Pinned checkout mismatch: expected $rev, got $actual" >&2
+            exit 1
+          fi
+          git -C "$RUNNER_TEMP/upstream" fetch -q --filter=blob:none origin main
+          git -C "$RUNNER_TEMP/upstream" merge-base --is-ancestor "$rev" origin/main
+
+      - name: Validate workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml

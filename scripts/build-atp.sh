@@ -12,7 +12,7 @@
 #                                        # otherwise clone the pinned rev to a temp dir
 #   scripts/build-atp.sh --pinned        # always clone the pinned UPSTREAM_REV
 #   scripts/build-atp.sh --out DIR       # copy the built binary to DIR (default ./dist)
-#   scripts/build-atp.sh --target TRIPLE # cross-target build (requires rustup target)
+#   scripts/build-atp.sh --target TRIPLE # target build (also requires its linker/C toolchain)
 #
 # Requires: git, rustup (the asupersync tree pins its own nightly toolchain via
 # rust-toolchain.toml, which rustup installs automatically on first build).
@@ -29,22 +29,35 @@ TARGET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --pinned) PINNED=1; shift ;;
-    --out) OUT_DIR="$2"; shift 2 ;;
-    --target) TARGET="$2"; shift 2 ;;
+    --out)
+      [ "$#" -ge 2 ] || { echo "--out requires a directory" >&2; exit 2; }
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --target)
+      [ "$#" -ge 2 ] || { echo "--target requires a Rust target triple" >&2; exit 2; }
+      TARGET="$2"
+      shift 2
+      ;;
     -h|--help) sed -n '2,20p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
 
 REV="$(tr -d '[:space:]' < "$REPO_ROOT/UPSTREAM_REV")"
-if [ -z "$REV" ]; then
-  echo "UPSTREAM_REV is empty; cannot pin a build" >&2
+if [[ ! "$REV" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "UPSTREAM_REV must be one lowercase 40-hex commit SHA" >&2
   exit 1
 fi
 
 SRC=""
 CLEANUP_DIR=""
-cleanup() { [ -n "$CLEANUP_DIR" ] && rm -rf "$CLEANUP_DIR"; }
+STAGED_BIN=""
+cleanup() {
+  if [ -n "$STAGED_BIN" ] && [ -e "$STAGED_BIN" ]; then rm -f "$STAGED_BIN"; fi
+  if [ -n "$CLEANUP_DIR" ]; then rm -rf "$CLEANUP_DIR"; fi
+  return 0
+}
 trap cleanup EXIT
 
 if [ "$PINNED" -eq 0 ] && [ -d "$REPO_ROOT/upstream/.git" ]; then
@@ -60,6 +73,16 @@ else
   git -C "$SRC" remote add origin "$UPSTREAM_REPO"
   git -C "$SRC" fetch -q --depth 1 origin "$REV"
   git -C "$SRC" checkout -q FETCH_HEAD
+  ACTUAL_REV="$(git -C "$SRC" rev-parse HEAD)"
+  if [ "$ACTUAL_REV" != "$REV" ]; then
+    echo "upstream checkout mismatch: expected $REV, got $ACTUAL_REV" >&2
+    exit 1
+  fi
+  git -C "$SRC" fetch -q --filter=blob:none origin main
+  if ! git -C "$SRC" merge-base --is-ancestor "$REV" origin/main; then
+    echo "pinned upstream commit $REV is not contained in origin/main" >&2
+    exit 1
+  fi
 fi
 
 BUILD_ARGS=(build --release --locked --bin atp --features atp-cli)
@@ -69,13 +92,23 @@ if [ -n "$TARGET" ]; then
   BIN_SUBPATH="$TARGET/release/atp"
   # Run inside the source tree so the target lands on the toolchain pinned by
   # its rust-toolchain.toml, not whatever toolchain is active in this repo.
-  (cd "$SRC" && rustup target add "$TARGET" >/dev/null 2>&1) || true
+  (cd "$SRC" && rustup target add "$TARGET")
 fi
 
 echo "==> cargo ${BUILD_ARGS[*]}"
 (cd "$SRC" && cargo "${BUILD_ARGS[@]}")
 
 mkdir -p "$OUT_DIR"
-cp "$SRC/target/$BIN_SUBPATH" "$OUT_DIR/atp"
+STAGED_BIN="$(mktemp "$OUT_DIR/.atp-build.XXXXXX")"
+install -m 0755 "$SRC/target/$BIN_SUBPATH" "$STAGED_BIN"
+mv -f "$STAGED_BIN" "$OUT_DIR/atp"
+STAGED_BIN=""
 echo "==> built: $OUT_DIR/atp"
-"$OUT_DIR/atp" --version
+
+HOST_TARGET="$(cd "$SRC" && rustc -vV | sed -n 's/^host: //p')"
+BUILT_TARGET="${TARGET:-$HOST_TARGET}"
+if [ "$BUILT_TARGET" = "$HOST_TARGET" ]; then
+  "$OUT_DIR/atp" --version
+else
+  echo "==> foreign target $BUILT_TARGET built successfully; runtime smoke test skipped on $HOST_TARGET"
+fi

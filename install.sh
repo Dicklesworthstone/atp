@@ -17,6 +17,8 @@
 #   --from-source      Build from the pinned asupersync source instead of
 #                      downloading a prebuilt binary (slow: full Rust build)
 #   --offline TARBALL  Install from a local atp-<target>.tar.gz (no network)
+#   --checksum SHA256  Expected archive SHA-256 (required for offline/custom
+#                      artifacts unless --no-verify is used)
 #   --quiet            Suppress non-error output
 #   --no-gum           Disable gum formatting even if available
 #   --no-verify        Skip checksum verification (for testing only)
@@ -32,13 +34,13 @@ REPO="${REPO:-atp}"
 UPSTREAM_OWNER="${UPSTREAM_OWNER:-Dicklesworthstone}"
 UPSTREAM_REPO="${UPSTREAM_REPO:-asupersync}"
 BIN_NAME="atp"
-DEST_DEFAULT="$HOME/.local/bin"
-DEST="${DEST:-$DEST_DEFAULT}"
+DEST="${DEST:-}"
 LOCK_FILE="${TMPDIR:-/tmp}/atp-install.lock"
 EASY=0
 QUIET=0
 VERIFY=0
 FROM_SOURCE=0
+FROM_SOURCE_EXPLICIT=0
 SYSTEM=0
 NO_GUM=0
 NO_CHECKSUM=0
@@ -152,6 +154,7 @@ Options:
   --verify           Run a post-install self-test
   --from-source      Build from pinned asupersync source (slow: full Rust build)
   --offline TARBALL  Install from a local atp-<target>.tar.gz (no network)
+  --checksum SHA256  Expected archive SHA-256 (offline/custom artifacts)
   --quiet            Suppress non-error output
   --no-gum           Disable gum formatting even if available
   --no-verify        Skip checksum verification (testing only)
@@ -160,15 +163,29 @@ Options:
 EOF
 }
 
+require_option_value() {
+  # $1 = flag name, $2 = number of args remaining, $3 = candidate value
+  if [ "$2" -ge 2 ] && [ -n "${3:-}" ]; then
+    case "$3" in
+      -*) : ;;
+      *) return 0 ;;
+    esac
+  fi
+  err "$1 requires a value"
+  usage >&2
+  exit 2
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2 ;;
-    --dest) DEST="$2"; shift 2 ;;
+    --version) require_option_value "$1" $# "${2:-}"; VERSION="$2"; shift 2 ;;
+    --dest) require_option_value "$1" $# "${2:-}"; DEST="$2"; shift 2 ;;
     --system) SYSTEM=1; DEST="/usr/local/bin"; shift ;;
     --easy-mode) EASY=1; shift ;;
     --verify) VERIFY=1; shift ;;
-    --from-source) FROM_SOURCE=1; shift ;;
-    --offline) OFFLINE_TARBALL="$2"; shift 2 ;;
+    --from-source) FROM_SOURCE=1; FROM_SOURCE_EXPLICIT=1; shift ;;
+    --offline) require_option_value "$1" $# "${2:-}"; OFFLINE_TARBALL="$2"; shift 2 ;;
+    --checksum) require_option_value "$1" $# "${2:-}"; CHECKSUM="$2"; shift 2 ;;
     --quiet) QUIET=1; shift ;;
     --no-gum) NO_GUM=1; shift ;;
     --no-verify) NO_CHECKSUM=1; shift ;;
@@ -178,8 +195,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -z "$DEST" ]; then
+  if [ -z "${HOME:-}" ]; then
+    err "HOME is not set; provide an explicit --dest"
+    exit 2
+  fi
+  DEST="$HOME/.local/bin"
+fi
+if [ -z "${HOME:-}" ] && { [ "$EASY" -eq 1 ] || [ "$FROM_SOURCE" -eq 1 ]; }; then
+  err "HOME is required by --easy-mode and --from-source"
+  exit 2
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Proxy support — pass "${PROXY_ARGS[@]}" to every curl call
+# Proxy support — passed to every curl call. NOTE: expanded everywhere with the
+# ${arr[@]+"${arr[@]}"} idiom because macOS ships bash 3.2, where expanding an
+# empty array under `set -u` is a fatal "unbound variable" error.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROXY_ARGS=()
@@ -204,11 +235,10 @@ detect_platform() {
 
   TARGET=""
   case "${OS}-${ARCH}" in
-    # Linux x86_64 prefers the fully-static musl artifact so it runs on every
-    # glibc generation; set_artifact_url probes and falls back to gnu if a
-    # release only shipped the glibc build.
+    # Linux prefers fully-static musl artifacts; set_artifact_url probes and
+    # falls back to gnu when a release did not ship musl for that architecture.
     linux-x86_64) TARGET="x86_64-unknown-linux-musl" ;;
-    linux-aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
+    linux-aarch64) TARGET="aarch64-unknown-linux-musl" ;;
     darwin-x86_64) TARGET="x86_64-apple-darwin" ;;
     darwin-aarch64) TARGET="aarch64-apple-darwin" ;;
     *) : ;;
@@ -235,7 +265,7 @@ resolve_version() {
   info "Resolving latest version..."
   local latest_url="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
   local tag
-  if ! tag=$(curl -fsSL "${PROXY_ARGS[@]}" -H "Accept: application/vnd.github.v3+json" "$latest_url" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); then
+  if ! tag=$(curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} -H "Accept: application/vnd.github.v3+json" "$latest_url" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); then
     tag=""
   fi
 
@@ -247,7 +277,7 @@ resolve_version() {
 
   # Redirect-based fallback
   local redirect_url="https://github.com/${OWNER}/${REPO}/releases/latest"
-  if tag=$(curl -fsSL "${PROXY_ARGS[@]}" -o /dev/null -w '%{url_effective}' "$redirect_url" 2>/dev/null | sed -E 's|.*/tag/||'); then
+  if tag=$(curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} -o /dev/null -w '%{url_effective}' "$redirect_url" 2>/dev/null | sed -E 's|.*/tag/||'); then
     if [ -n "$tag" ] && [[ "$tag" =~ ^v[0-9] ]] && [[ "$tag" != *"/"* ]]; then
       VERSION="$tag"
       info "Resolved latest version via redirect: $VERSION"
@@ -259,17 +289,19 @@ resolve_version() {
 }
 
 http_status() {
-  curl -sSL "${PROXY_ARGS[@]}" -o /dev/null -w '%{http_code}' -I --max-time 10 "$1" 2>/dev/null || echo "000"
+  curl -sSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} -o /dev/null -w '%{http_code}' -I --max-time 10 "$1" 2>/dev/null || echo "000"
 }
 
 set_artifact_url() {
   TAR=""
   URL=""
-  [ "$FROM_SOURCE" -eq 1 ] && return 0
+  # Offline wins over --from-source (main dispatch checks offline first, so
+  # TAR must be populated for that path even when both flags are passed).
   if [ -n "$OFFLINE_TARBALL" ]; then
     TAR=$(basename "$OFFLINE_TARBALL")
     return 0
   fi
+  [ "$FROM_SOURCE" -eq 1 ] && return 0
   if [ -n "$ARTIFACT_URL" ]; then
     TAR=$(basename "$ARTIFACT_URL")
     URL="$ARTIFACT_URL"
@@ -284,12 +316,12 @@ set_artifact_url() {
   TAR="atp-${TARGET}.tar.gz"
   URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${TAR}"
 
-  # musl-first with gnu fallback for Linux x86_64 (one HEAD probe).
-  if [ "$TARGET" = "x86_64-unknown-linux-musl" ] && command -v curl >/dev/null 2>&1; then
+  # musl-first with gnu fallback for both Linux architectures (one HEAD probe).
+  if [[ "$TARGET" == *-unknown-linux-musl ]] && command -v curl >/dev/null 2>&1; then
     local code
     code=$(http_status "$URL")
     if [ "$code" != "200" ] && [ "$code" != "302" ]; then
-      local gnu_target="x86_64-unknown-linux-gnu"
+      local gnu_target="${TARGET%musl}gnu"
       local gnu_url="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/atp-${gnu_target}.tar.gz"
       local gnu_code
       gnu_code=$(http_status "$gnu_url")
@@ -310,10 +342,15 @@ set_artifact_url() {
 check_disk_space() {
   local min_kb=51200
   local path="$DEST"
-  [ ! -d "$path" ] && path=$(dirname "$path")
+  # Walk up to the nearest existing ancestor so `df` has a real path to stat
+  # (a fresh nested --dest would otherwise silently kill the script under
+  # set -e/pipefail when df exits non-zero).
+  while [ ! -d "$path" ] && [ "$path" != "/" ]; do
+    path=$(dirname "$path")
+  done
   if command -v df >/dev/null 2>&1; then
     local avail_kb
-    avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+    avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
     if [ -n "$avail_kb" ] && [ "$avail_kb" -lt "$min_kb" ]; then
       err "Insufficient disk space in $path (need at least 50MB)"
       exit 1
@@ -325,13 +362,13 @@ check_write_permissions() {
   if [ ! -d "$DEST" ]; then
     if ! mkdir -p "$DEST" 2>/dev/null; then
       err "Cannot create $DEST (insufficient permissions)"
-      err "Try --system with sudo, or choose a writable --dest"
+      err "Try re-running with sudo (for a system-wide install), or choose a writable --dest"
       exit 1
     fi
   fi
   if [ ! -w "$DEST" ]; then
     err "No write permission to $DEST"
-    err "Try --system with sudo, or choose a writable --dest"
+    err "Try re-running with sudo (for a system-wide install), or choose a writable --dest"
     exit 1
   fi
 }
@@ -340,8 +377,11 @@ check_existing_install() {
   INSTALLED_VERSION=""
   if [ -x "$DEST/$BIN_NAME" ]; then
     INSTALLED_VERSION=$("$DEST/$BIN_NAME" --version 2>/dev/null | head -1 || echo "")
-    [ -n "$INSTALLED_VERSION" ] && info "Existing atp detected: $INSTALLED_VERSION"
+    if [ -n "$INSTALLED_VERSION" ]; then
+      info "Existing atp detected: $INSTALLED_VERSION"
+    fi
   fi
+  return 0
 }
 
 check_network() {
@@ -352,7 +392,7 @@ check_network() {
     err "curl is required to download release artifacts"
     exit 1
   fi
-  if ! curl -fsSL "${PROXY_ARGS[@]}" --connect-timeout 3 --max-time 8 -o /dev/null -I "$URL" 2>/dev/null; then
+  if ! curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} --connect-timeout 3 --max-time 8 -o /dev/null -I "$URL" 2>/dev/null; then
     warn "Network preflight failed for $URL"
     warn "Continuing; the download may still fail"
   fi
@@ -373,6 +413,17 @@ preflight_checks() {
 acquire_lock() {
   local tries=0
   while ! mkdir "$LOCK_FILE" 2>/dev/null; do
+    # mkdir can fail for reasons other than contention (stray regular file at
+    # the lock path, unwritable TMPDIR) — fail fast with the right message
+    # instead of spinning 30s and blaming a concurrent install.
+    if [ ! -d "$LOCK_FILE" ] && [ -e "$LOCK_FILE" ]; then
+      err "Lock path $LOCK_FILE exists but is not a directory; remove it and retry"
+      exit 1
+    fi
+    if [ ! -e "$LOCK_FILE" ]; then
+      err "Cannot create lock at $LOCK_FILE (is ${TMPDIR:-/tmp} writable?)"
+      exit 1
+    fi
     if [ -f "$LOCK_FILE/pid" ]; then
       local lock_pid
       lock_pid=$(cat "$LOCK_FILE/pid" 2>/dev/null || echo "")
@@ -394,8 +445,10 @@ acquire_lock() {
 }
 
 TMP=""
+STAGED_INSTALL=""
 LOCKED=0
 cleanup() {
+  if [ -n "$STAGED_INSTALL" ]; then rm -f "$STAGED_INSTALL"; fi
   if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
   if [ "$LOCKED" -eq 1 ]; then rm -rf "$LOCK_FILE"; fi
   return 0
@@ -417,6 +470,15 @@ sha256_of() {
   fi
 }
 
+is_sha256() {
+  local value="$1"
+  [ "${#value}" -eq 64 ] || return 1
+  case "$value" in
+    *[!0-9A-Fa-f]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 verify_checksum() {
   local file="$1"
 
@@ -426,33 +488,51 @@ verify_checksum() {
   fi
 
   local expected="$CHECKSUM"
+  # Offline installs: accept a sibling <tarball>.sha256 file if present.
+  if [ -z "$expected" ] && [ -n "$OFFLINE_TARBALL" ] && [ -f "${OFFLINE_TARBALL}.sha256" ]; then
+    expected=$(awk '{print $1; exit}' "${OFFLINE_TARBALL}.sha256")
+  fi
   if [ -z "$expected" ] && [ -n "$URL" ]; then
     # Primary: SHA256SUMS from the same release
-    local sums_url="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/SHA256SUMS"
-    local sums_file="$TMP/SHA256SUMS"
-    if curl -fsSL "${PROXY_ARGS[@]}" "$sums_url" -o "$sums_file" 2>/dev/null; then
-      expected=$(awk -v t="$TAR" '$2 == t {print $1}' "$sums_file" | head -1)
+    if [ -n "$VERSION" ]; then
+      local sums_url="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/SHA256SUMS"
+      local sums_file="$TMP/SHA256SUMS"
+      if curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "$sums_url" -o "$sums_file" 2>/dev/null; then
+        expected=$(awk -v t="$TAR" '$2 == t {print $1}' "$sums_file" | head -1)
+      fi
     fi
     # Fallback: per-asset .sha256 file
     if [ -z "$expected" ]; then
       local asset_sum
-      if asset_sum=$(curl -fsSL "${PROXY_ARGS[@]}" "${URL}.sha256" 2>/dev/null); then
+      if asset_sum=$(curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "${URL}.sha256" 2>/dev/null); then
         expected=$(echo "$asset_sum" | awk '{print $1}' | head -1)
       fi
     fi
   fi
 
   if [ -z "$expected" ]; then
-    warn "No published checksum found for $TAR; skipping verification"
-    return 0
+    err "No checksum found for $TAR; refusing an unverified install"
+    err "Provide --checksum SHA256 (or use --no-verify only for testing)"
+    return 1
   fi
 
-  local actual
-  actual=$(sha256_of "$file")
-  if [ -z "$actual" ]; then
-    warn "No SHA256 tool found (sha256sum or shasum); skipping verification"
-    return 0
+  if ! is_sha256 "$expected"; then
+    err "Invalid SHA-256 checksum for $TAR (expected exactly 64 hexadecimal characters)"
+    return 1
   fi
+  expected=$(printf '%s' "$expected" | tr 'A-F' 'a-f')
+
+  local actual
+  actual=$(sha256_of "$file") || actual=""
+  if [ -z "$actual" ]; then
+    err "No SHA-256 tool found (need sha256sum or shasum); refusing an unverified install"
+    return 1
+  fi
+  if ! is_sha256 "$actual"; then
+    err "SHA-256 tool returned malformed output; refusing to install"
+    return 1
+  fi
+  actual=$(printf '%s' "$actual" | tr 'A-F' 'a-f')
 
   if [ "$actual" != "$expected" ]; then
     err "Checksum verification FAILED for $TAR"
@@ -464,6 +544,210 @@ verify_checksum() {
   fi
 
   ok "Checksum verified: ${actual:0:16}..."
+  return 0
+}
+
+extract_atp_archive() {
+  local archive="$1"
+  local members_file="$TMP/archive-members"
+  local candidate_member=""
+  local candidate_count=0
+  local member normalized
+
+  if ! tar -tzf "$archive" > "$members_file"; then
+    err "Could not list archive: $TAR"
+    return 1
+  fi
+
+  while IFS= read -r member; do
+    normalized="$member"
+    while [ "${normalized#./}" != "$normalized" ]; do
+      normalized="${normalized#./}"
+    done
+    [ -z "$normalized" ] && continue
+    case "$normalized" in
+      /*|../*|*/../*|*/..)
+        err "Archive contains an unsafe path: $member"
+        return 1
+        ;;
+    esac
+    case "$normalized" in
+      atp|*/atp)
+        candidate_member="$member"
+        candidate_count=$((candidate_count + 1))
+        ;;
+    esac
+  done < "$members_file"
+
+  if [ "$candidate_count" -ne 1 ]; then
+    err "Archive must contain exactly one regular atp binary (found $candidate_count)"
+    return 1
+  fi
+
+  local verbose type_char
+  if ! verbose=$(tar -tvzf "$archive" -- "$candidate_member" 2>/dev/null); then
+    err "Could not inspect atp archive member: $candidate_member"
+    return 1
+  fi
+  type_char="${verbose:0:1}"
+  if [ "$type_char" != "-" ]; then
+    err "Archive atp member is not a regular file: $candidate_member"
+    return 1
+  fi
+  case "$verbose" in
+    *" -> "*|*" link to "*)
+      err "Archive atp member is not a regular file: $candidate_member"
+      return 1
+      ;;
+  esac
+  local extract_root="$TMP/archive-extract"
+  mkdir -p "$extract_root"
+  if ! tar -xzf "$archive" -C "$extract_root" -- "$candidate_member"; then
+    err "Could not extract atp archive member: $candidate_member"
+    return 1
+  fi
+
+  BIN="$extract_root/$candidate_member"
+  if [ ! -f "$BIN" ] || [ -L "$BIN" ]; then
+    err "Extracted atp member is not a regular file: $candidate_member"
+    return 1
+  fi
+}
+
+VALIDATED_VERSION_OUTPUT=""
+SELF_TEST="skipped"
+
+validate_binary() {
+  local binary="$1"
+  local output first actual expected
+
+  if ! output=$("$binary" --version 2>/dev/null); then
+    err "Installed candidate failed to run: $binary --version"
+    return 1
+  fi
+  first="${output%%$'\n'*}"
+  case "$first" in
+    "atp "*) actual="${first#atp }" ;;
+    *)
+      err "Installed candidate returned an unexpected version string: ${first:-<empty>}"
+      return 1
+      ;;
+  esac
+  actual="${actual%% *}"
+  if [ -z "$actual" ]; then
+    err "Installed candidate did not report a version"
+    return 1
+  fi
+
+  if [ -n "$VERSION" ]; then
+    expected="${VERSION#v}"
+    if [ "$actual" != "$expected" ]; then
+      err "Binary version mismatch: requested $expected, candidate reports $actual"
+      return 1
+    fi
+  fi
+
+  VALIDATED_VERSION_OUTPUT="$first"
+}
+
+run_requested_self_test() {
+  local binary="$1"
+  [ "$VERIFY" -eq 1 ] || return 0
+
+  info "Running post-install self-test"
+  if "$binary" rq-keygen >/dev/null 2>&1; then
+    SELF_TEST="passed"
+    ok "Self-test passed (--version + rq-keygen)"
+    return 0
+  fi
+
+  SELF_TEST="FAILED"
+  err "Self-test failed; the existing installation was not replaced"
+  return 1
+}
+
+atomic_install() {
+  local source_binary="$1"
+  local final_binary="$DEST/$BIN_NAME"
+
+  if [ -d "$final_binary" ]; then
+    err "Install target is a directory and cannot be atomically replaced: $final_binary"
+    return 1
+  fi
+
+  if ! STAGED_INSTALL=$(mktemp "$DEST/.${BIN_NAME}.install.XXXXXX"); then
+    err "Could not create an install staging file in $DEST"
+    return 1
+  fi
+  if ! install -m 0755 "$source_binary" "$STAGED_INSTALL"; then
+    err "Could not stage $BIN_NAME in $DEST"
+    return 1
+  fi
+  validate_binary "$STAGED_INSTALL" || return 1
+  run_requested_self_test "$STAGED_INSTALL" || return 1
+  if [ -d "$final_binary" ]; then
+    err "Install target became a directory before replacement: $final_binary"
+    return 1
+  fi
+  if ! mv -f "$STAGED_INSTALL" "$final_binary"; then
+    err "Could not atomically replace $final_binary"
+    return 1
+  fi
+  STAGED_INSTALL=""
+  ok "Installed $BIN_NAME to $DEST/$BIN_NAME"
+}
+
+configure_path() {
+  PATH_NOTE=""
+  local in_current_path=0
+  case ":$PATH:" in
+    *:"$DEST":*) in_current_path=1 ;;
+  esac
+
+  if [ "$EASY" -eq 1 ]; then
+    local quoted_dest path_line rc last_byte
+    local profile_count=0
+    local changed_count=0
+    local configured_count=0
+    printf -v quoted_dest '%q' "$DEST"
+    path_line="export PATH=${quoted_dest}:\$PATH"
+
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+      if [ -e "$rc" ] && [ -w "$rc" ]; then
+        profile_count=$((profile_count + 1))
+        if grep -Fqx -- "$path_line" "$rc" >/dev/null 2>&1; then
+          configured_count=$((configured_count + 1))
+          continue
+        fi
+        last_byte=""
+        if [ -s "$rc" ]; then
+          last_byte=$(tail -c 1 "$rc" 2>/dev/null || true)
+        fi
+        if [ -n "$last_byte" ]; then
+          printf '\n' >> "$rc"
+        fi
+        if printf '%s\n' "$path_line" >> "$rc"; then
+          changed_count=$((changed_count + 1))
+        else
+          warn "Could not update PATH in $rc"
+        fi
+      fi
+    done
+
+    if [ "$changed_count" -gt 0 ]; then
+      PATH_NOTE="PATH updated in shell rc files; restart your shell"
+    elif [ "$profile_count" -gt 0 ] && [ "$configured_count" -eq "$profile_count" ]; then
+      PATH_NOTE="PATH is already configured in shell rc files"
+    else
+      PATH_NOTE="Add $DEST to your PATH"
+    fi
+  elif [ "$in_current_path" -eq 0 ]; then
+    PATH_NOTE="Add $DEST to your PATH (or re-run with --easy-mode)"
+  fi
+
+  if [ -n "$PATH_NOTE" ]; then
+    warn "$PATH_NOTE"
+  fi
   return 0
 }
 
@@ -484,7 +768,7 @@ resolve_upstream_rev() {
   if [ -z "$UPSTREAM_REV" ]; then
     local ref="${VERSION:-main}"
     local pin_url="https://raw.githubusercontent.com/${OWNER}/${REPO}/${ref}/UPSTREAM_REV"
-    UPSTREAM_REV=$(curl -fsSL "${PROXY_ARGS[@]}" "$pin_url" 2>/dev/null | tr -d '[:space:]' || echo "")
+    UPSTREAM_REV=$(curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "$pin_url" 2>/dev/null | tr -d '[:space:]' || echo "")
   fi
   if [ -z "$UPSTREAM_REV" ]; then
     err "Could not resolve the pinned asupersync revision (UPSTREAM_REV)"
@@ -496,13 +780,18 @@ ensure_rust() {
   if command -v cargo >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1; then
     return 0
   fi
+  if [ "$FROM_SOURCE_EXPLICIT" -eq 0 ]; then
+    err "Prebuilt download failed and source fallback requires cargo + rustup"
+    err "Refusing to install a Rust toolchain implicitly; install rustup or re-run with --from-source"
+    exit 1
+  fi
   if [ "$EASY" -ne 1 ] && [ -t 0 ]; then
     echo -n "Building atp from source requires rustup. Install rustup now? (y/N): "
     read -r ans
     case "$ans" in y|Y) : ;; *) err "rustup is required for --from-source"; exit 1 ;; esac
   fi
   info "Installing rustup (the asupersync tree pins its own nightly toolchain)"
-  curl -fsSL "${PROXY_ARGS[@]}" https://sh.rustup.rs | sh -s -- -y --profile minimal
+  curl -fsSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} https://sh.rustup.rs | sh -s -- -y --profile minimal
   export PATH="$HOME/.cargo/bin:$PATH"
 }
 
@@ -532,6 +821,17 @@ build_from_source() {
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+if [ "$NO_CHECKSUM" -eq 0 ] && [ -n "$CHECKSUM" ] && ! is_sha256 "$CHECKSUM"; then
+  err "--checksum requires exactly 64 hexadecimal characters"
+  exit 2
+fi
+case "$DEST" in
+  *:*)
+    err "--dest cannot contain ':' because PATH uses it as an entry separator"
+    exit 2
+    ;;
+esac
+
 if [ "$QUIET" -eq 0 ]; then
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
     gum style \
@@ -553,98 +853,66 @@ acquire_lock
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/atp-install.XXXXXX")
 
-# Already-installed short-circuit
+# Same-version installs skip acquisition, but still honor --verify and
+# --easy-mode below.
+SKIP_INSTALL=0
 if [ "$FORCE_INSTALL" -eq 0 ] && [ -n "$VERSION" ] && [ -n "$INSTALLED_VERSION" ]; then
-  installed_ver="${INSTALLED_VERSION##* }"
+  installed_ver=""
+  case "$INSTALLED_VERSION" in
+    "atp "*) installed_ver="${INSTALLED_VERSION#atp }"; installed_ver="${installed_ver%% *}" ;;
+  esac
   target_ver="${VERSION#v}"
   if [ "$installed_ver" = "$target_ver" ]; then
     ok "atp $VERSION is already installed at $DEST/$BIN_NAME"
     info "Use --force to reinstall"
-    exit 0
+    SKIP_INSTALL=1
   fi
 fi
 
 BIN=""
-if [ -n "$OFFLINE_TARBALL" ]; then
-  if [ ! -f "$OFFLINE_TARBALL" ]; then
-    err "Offline tarball not found: $OFFLINE_TARBALL"
-    exit 1
-  fi
-  info "Installing from offline tarball: $OFFLINE_TARBALL"
-  cp "$OFFLINE_TARBALL" "$TMP/$TAR"
-  verify_checksum "$TMP/$TAR" || exit 1
-  tar -xzf "$TMP/$TAR" -C "$TMP"
-  BIN="$TMP/atp"
-elif [ "$FROM_SOURCE" -eq 1 ]; then
-  build_from_source
+if [ "$SKIP_INSTALL" -eq 1 ]; then
+  validate_binary "$DEST/$BIN_NAME" || exit 1
+  run_requested_self_test "$DEST/$BIN_NAME" || exit 1
 else
-  info "Downloading $TAR (${VERSION})..."
-  CURL_PROGRESS=(--progress-bar)
-  [ "$QUIET" -eq 1 ] && CURL_PROGRESS=(-sS)
-  if ! run_with_spinner "Downloading atp ${VERSION}..." \
-    curl -fSL "${PROXY_ARGS[@]}" "${CURL_PROGRESS[@]}" "$URL" -o "$TMP/$TAR"; then
-    warn "Download failed; falling back to build-from-source"
-    FROM_SOURCE=1
-    build_from_source
-  else
-    if ! verify_checksum "$TMP/$TAR"; then
+  if [ -n "$OFFLINE_TARBALL" ]; then
+    if [ ! -f "$OFFLINE_TARBALL" ]; then
+      err "Offline tarball not found: $OFFLINE_TARBALL"
       exit 1
     fi
-    tar -xzf "$TMP/$TAR" -C "$TMP"
-    BIN="$TMP/atp"
-  fi
-fi
-
-if [ ! -f "$BIN" ]; then
-  err "Built/downloaded binary not found at $BIN"
-  exit 1
-fi
-
-install -m 0755 "$BIN" "$DEST/$BIN_NAME"
-ok "Installed $BIN_NAME to $DEST/$BIN_NAME"
-
-INSTALLED=$("$DEST/$BIN_NAME" --version 2>/dev/null | head -1 || echo "atp (version unknown)")
-
-# PATH handling
-PATH_NOTE=""
-case ":$PATH:" in
-  *:"$DEST":*) : ;;
-  *)
-    if [ "$EASY" -eq 1 ]; then
-      updated=0
-      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-        if [ -e "$rc" ] && [ -w "$rc" ]; then
-          if ! grep -F "$DEST" "$rc" >/dev/null 2>&1; then
-            echo "export PATH=\"$DEST:\$PATH\"" >> "$rc"
-          fi
-          updated=1
-        fi
-      done
-      if [ "$updated" -eq 1 ]; then
-        PATH_NOTE="PATH updated in shell rc files; restart your shell"
-      else
-        PATH_NOTE="Add $DEST to your PATH"
-      fi
-    else
-      PATH_NOTE="Add $DEST to your PATH (or re-run with --easy-mode)"
-    fi
-    ;;
-esac
-[ -n "$PATH_NOTE" ] && warn "$PATH_NOTE"
-
-# Self-test
-SELF_TEST="skipped"
-if [ "$VERIFY" -eq 1 ]; then
-  info "Running post-install self-test"
-  if "$DEST/$BIN_NAME" --version >/dev/null 2>&1 && \
-     "$DEST/$BIN_NAME" rq-keygen >/dev/null 2>&1; then
-    SELF_TEST="passed"
-    ok "Self-test passed (--version + rq-keygen)"
+    info "Installing from offline tarball: $OFFLINE_TARBALL"
+    cp "$OFFLINE_TARBALL" "$TMP/$TAR"
+    verify_checksum "$TMP/$TAR" || exit 1
+    extract_atp_archive "$TMP/$TAR" || exit 1
+  elif [ "$FROM_SOURCE" -eq 1 ]; then
+    build_from_source
   else
-    SELF_TEST="FAILED"
-    err "Self-test failed — the binary may not work on this platform"
+    info "Downloading $TAR${VERSION:+ (${VERSION})}..."
+    CURL_PROGRESS=(--progress-bar)
+    # Suppress curl's own bar when quiet, or when gum's spinner is already
+    # providing progress (both at once garbles the terminal).
+    if [ "$QUIET" -eq 1 ] || { [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; }; then
+      CURL_PROGRESS=(-sS)
+    fi
+    if ! run_with_spinner "Downloading atp ${VERSION:-artifact}..." \
+      curl -fSL ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "${CURL_PROGRESS[@]}" "$URL" -o "$TMP/$TAR"; then
+      warn "Download failed; falling back to build-from-source"
+      FROM_SOURCE=1
+      build_from_source
+    else
+      verify_checksum "$TMP/$TAR" || exit 1
+      extract_atp_archive "$TMP/$TAR" || exit 1
+    fi
   fi
+
+  if [ ! -f "$BIN" ] || [ -L "$BIN" ]; then
+    err "Built/downloaded binary is not a regular file: $BIN"
+    exit 1
+  fi
+  atomic_install "$BIN" || exit 1
 fi
+
+INSTALLED="$VALIDATED_VERSION_OUTPUT"
+configure_path
 
 # Final summary
 if [ "$QUIET" -eq 0 ]; then
