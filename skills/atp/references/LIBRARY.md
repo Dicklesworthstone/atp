@@ -6,8 +6,15 @@ Rust project built-in fountain-coded, SHA-verified transfer capability.
 
 ```toml
 [dependencies]
-asupersync = { version = "0.3.7", features = ["quic", "tls"] }  # rq/tcp need no extra features
+# Precise form — pin the exact commit this repo's UPSTREAM_REV names:
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "<UPSTREAM_REV>", features = ["quic", "tls"] }
+# crates.io may lag the git head; check the published version before using
+# `version = "…"`. rq/tcp tiers need no extra features; quic needs quic+tls.
 ```
+
+Toolchain: asupersync's default features require the **nightly** toolchain
+pinned by its `rust-toolchain.toml` (an audited stable lane exists with
+default-features off; see its AGENTS.md).
 
 ## The one thing to internalize first
 
@@ -27,9 +34,9 @@ use asupersync::cx::Cx;
 
 | Module | What you get |
 |--------|---------------|
-| `asupersync::net::atp::transport_tcp` | `send_path` / `receive_on_endpoint`, `TransferConfig`, `SendReport`/`ReceiveReport` — the default reliable tier, delta-capable |
-| `asupersync::net::atp::transport_rq` | RaptorQ-over-UDP tier: `RqConfig` (symbol size, repair overhead, round-0 loss target, auth key), same report shapes |
-| `asupersync::net::atp::transport_quic` | encrypted tier (features `quic`,`tls`): `QuicConfig`, `send_path`, `receive_on_endpoint`/`serve_path`, `QuicClientTls`/`QuicServerTls`; `QUIC_DEFAULT_SYMBOL_SIZE` for datagram-fitting symbols |
+| `asupersync::net::atp::transport_tcp` | `send_path` / `send_path_filtered`, `receive_once` / `receive_connection` / `serve`, `TransferConfig`, `SendReport`/`ReceiveReport` — default reliable tier, delta-capable |
+| `asupersync::net::atp::transport_rq` | RaptorQ-over-UDP tier: `send_path`, `receive_once` / `receive_connection`, `RqConfig` (symbol size, repair overhead, round-0 loss target, auth key) |
+| `asupersync::net::atp::transport_quic` | encrypted tier (features `quic`,`tls`): `QuicConfig`, `send_path`, `receive_path` / `receive_once` / `serve`, `native_link::receive_on_endpoint`, `QuicClientTls`/`QuicServerTls`, `QUIC_DEFAULT_SYMBOL_SIZE` |
 | `asupersync::net::atp::transport_common` | shared pieces: `plan_transfer`, `FilterSet`, `TransferProgress`, manifest/delta types |
 
 Start from `artifacts/api_surface_map_v1.json` in the asupersync repo for

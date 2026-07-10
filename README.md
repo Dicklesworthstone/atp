@@ -371,6 +371,11 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.
 # Air-gapped: install a pre-downloaded tarball with an explicit checksum
 # (download install.sh + the tarball + SHA256SUMS on a connected machine first)
 bash install.sh --offline ./atp-x86_64-unknown-linux-musl.tar.gz --checksum <sha256>
+
+# Also install the atp agent skill for Claude Code / Codex without being asked
+# (interactive installs offer it; --no-skill suppresses the prompt;
+#  --uninstall-skill removes installer-managed copies later)
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.sh | bash -s -- --skill
 ```
 
 ### Prebuilt binaries

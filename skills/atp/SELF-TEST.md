@@ -29,6 +29,8 @@
 ## Validation
 
 ```bash
-~/.claude/skills/sw/scripts/validate-skill.py skills/atp/
-bash -n skills/atp/scripts/smoke.sh skills/atp/scripts/check-report.sh
+# any writing-skills validator install works; adjust the path to yours
+validate-skill.py skills/atp/
+bash -n skills/atp/scripts/smoke.sh && bash -n skills/atp/scripts/check-report.sh
+skills/atp/scripts/smoke.sh          # real loopback transfer must pass
 ```

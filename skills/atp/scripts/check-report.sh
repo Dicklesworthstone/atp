@@ -23,5 +23,7 @@ if committed is True:
     extra = f", feedback_rounds={rounds}" if rounds is not None else ""
     extra += ", sha_ok=true" if sha else ""
     print(f"VERDICT: PASS — committed{extra}"); sys.exit(0)
+if committed is None:
+    print("VERDICT: UNKNOWN — no 'committed' key found (not a transfer report?)"); sys.exit(2)
 print(f"VERDICT: FAIL — committed={committed!r} (fail-closed: nothing was written)"); sys.exit(1)
 PY
