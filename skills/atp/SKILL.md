@@ -18,6 +18,7 @@ dependencies:
 | You need to… | Do |
 |--------------|----|
 | Install or update atp (either end) | Update section below — one-liner, safe to re-run, keeps both ends on the same version |
+| Roll atp out across the user's ssh machines | `scripts/fleet-install.sh --list`, ASK the user which hosts (all or some), then run it with their picks |
 | Send to a machine you've sent to before | `~/.config/atp/peers/<host>.md` — reuse the saved command verbatim; do NOT rediscover transport/certs/data-host |
 | Verify atp works in this environment | `scripts/smoke.sh` (real loopback transfer, exit 0 = healthy) |
 | Send/receive a file or tree | Canonical Invocations below — pick the row from Choose a Transport first |
@@ -80,6 +81,14 @@ irm https://raw.githubusercontent.com/Dicklesworthstone/atp/main/install.ps1 | i
 Pin a version with `bash -s -- --version vX.Y.Z` / `-Version vX.Y.Z`;
 `--skill` also refreshes this skill. Verify after: `atp --version` +
 `scripts/smoke.sh`.
+
+**Fleet rollout**: offer to install/update atp on the user's ssh machines.
+`scripts/fleet-install.sh --list` enumerates concrete `~/.ssh/config` hosts;
+present the list and let the user choose all or some (never assume), then
+`scripts/fleet-install.sh <picks…>` (or `--all`). BatchMode ssh (no
+password hangs), idempotent, per-host `HOST/STATUS/version` verdicts,
+non-POSIX remotes reported for manual install.ps1. A fresh peer machine
+becoming reachable is a natural moment to offer this.
 
 ## Boundary Card (v0.3.7, 2026-07-10)
 
